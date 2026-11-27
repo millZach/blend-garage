@@ -11,6 +11,7 @@ import {
 import { clearSavedBuild, loadSavedBuild, loadSession, parseBuildFile, saveBuild, saveSession, type Session } from './builds';
 import { CameraDirector } from './camera/CameraDirector';
 import { fetchCatalog, fetchVehicleManifest } from './catalog';
+import { DriveSession } from './DriveSession';
 import { DEG, angleDelta, clamp, damp, easeInOutCubic, lerp, smoothstep } from './math';
 import { ShopEnvironment } from './shop/ShopEnvironment';
 import { HALL, HERO_BAY, LIFT, TURNTABLE, clampToShop } from './shop/layout';
@@ -57,6 +58,7 @@ export class GarageEngine {
 
   private rig: VehicleRig | null = null;
   private build: CarBuild | null = null;
+  private driveSession: DriveSession | null = null;
   private loadToken = 0;
   private selectTimer: ReturnType<typeof setTimeout> | undefined;
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -101,6 +103,7 @@ export class GarageEngine {
       perf: { fps: 0, drawCalls: 0, triangles: 0 },
       notice: null,
       curtain: 0,
+      drive: null,
     });
   }
 
@@ -122,6 +125,8 @@ export class GarageEngine {
     clearTimeout(this.noticeTimer);
     this.flushSave();
     for (const tween of this.tweens.splice(0)) tween.resolve();
+    this.driveSession?.dispose();
+    this.driveSession = null;
     this.loader.dispose();
     this.rig?.dispose();
     this.rig = null;
@@ -189,6 +194,7 @@ export class GarageEngine {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
     this.renderer.setSize(width, height, false);
     this.director.setSize(width, height);
+    this.driveSession?.resize(width, height);
   }
 
   // ------------------------------------------------------------------ catalog and car selection
@@ -400,6 +406,125 @@ export class GarageEngine {
 
     await this.animate(0.34, (k) => this.store.set({ curtain: 1 - k }));
     this.store.set({ busy: null, curtain: 0 });
+  }
+
+  // ------------------------------------------------------------------ shop <-> open-world drive
+
+  /** Launches the current customized car from the Mechanics Shop straight into Open-World Drive Mode. */
+  async enterDrive(): Promise<void> {
+    const { rig, build, shop, director, renderer } = this;
+    const s = this.store.get();
+    if (!rig || !build || !shop || !director || !renderer || s.busy || s.screen !== 'shop') return;
+
+    this.flushSave();
+    this.store.set({ busy: 'entering-drive' });
+    await this.animate(0.22, (k) => this.store.set({ curtain: k }));
+    if (this.disposed) return;
+
+    director.setMode('orbit');
+    shop.group.visible = false;
+    shop.lighting.group.visible = false;
+    rig.setLiftHeight(0);
+
+    try {
+      const session = await DriveSession.create({
+        scene: this.scene,
+        renderer,
+        canvas: this.canvas,
+        rig,
+        build,
+        width: this.canvas.clientWidth || window.innerWidth,
+        height: this.canvas.clientHeight || window.innerHeight,
+        onExit: () => void this.exitDrive(),
+        onNotify: (text) => this.notify(text),
+      });
+      if (this.disposed) {
+        session.dispose();
+        return;
+      }
+      this.driveSession = session;
+      renderer.shadowMap.needsUpdate = true;
+      this.store.set({ screen: 'drive', drive: session.getSnapshot() });
+    } catch (error) {
+      shop.group.visible = true;
+      shop.lighting.group.visible = true;
+      rig.restoreShopPose();
+      this.notify(`Could not start Open-World Drive Mode: ${describe(error)}`, 'error');
+      await this.animate(0.22, (k) => this.store.set({ curtain: 1 - k }));
+      if (!this.disposed) this.store.set({ busy: null, curtain: 0 });
+      return;
+    }
+
+    await this.animate(0.28, (k) => this.store.set({ curtain: 1 - k }));
+    if (!this.disposed) this.store.set({ busy: null, curtain: 0 });
+  }
+
+  /** Exits Open-World Drive Mode, disposes world/physics/damage cleanly, and restores the Mechanics Shop. */
+  async exitDrive(): Promise<void> {
+    const { shop, director, renderer } = this;
+    const s = this.store.get();
+    if (!shop || !director || !renderer || s.busy || s.screen !== 'drive') return;
+
+    this.store.set({ busy: 'exiting-drive' });
+    await this.animate(0.22, (k) => this.store.set({ curtain: k }));
+    if (this.disposed) return;
+
+    this.driveSession?.dispose();
+    this.driveSession = null;
+
+    shop.group.visible = true;
+    shop.lighting.group.visible = true;
+    shop.lift.reset();
+    this.rig?.restoreShopPose();
+    this.lastLift = 0;
+    this.onTurntable = false;
+    this.carZ = HERO_BAY.z;
+    this.lastPose = '';
+    this.setLiftLoad();
+
+    shop.lighting.setPhotoBay(0, true);
+    shop.lighting.setEnvStage('hero-bay');
+    shop.lighting.setMood(this.session.mood);
+
+    director.setMode('orbit');
+    this.applyOrbitLimits();
+    const hero = this.presetPose('hero', HERO_BAY, 0);
+    director.jumpTo(hero.position, hero.target);
+    renderer.shadowMap.needsUpdate = true;
+
+    this.store.set({ screen: 'shop', drive: null, cameraMode: 'orbit', cameraPreset: 'hero' });
+    await this.animate(0.28, (k) => this.store.set({ curtain: 1 - k }));
+    if (!this.disposed) this.store.set({ busy: null, curtain: 0 });
+  }
+
+  /** Repairs all visual mesh deformation and mechanical damage in Drive Mode. */
+  repairDriveCar(): void {
+    if (!this.driveSession || this.store.get().screen !== 'drive') return;
+    this.driveSession.repairCar();
+    this.store.set({ drive: this.driveSession.getSnapshot() });
+    this.notify('Car repaired to 100%.');
+  }
+
+  /** Resets the car to the nearest road (no arg) or warps to a named open-world spot. */
+  resetDriveCar(spawnName?: string): void {
+    if (!this.driveSession || this.store.get().screen !== 'drive') return;
+    this.driveSession.resetCar(spawnName);
+    this.store.set({ drive: this.driveSession.getSnapshot() });
+    if (!spawnName) this.notify('Reset onto nearest road.');
+  }
+
+  /** Cycles through the driving camera angles (`chase` -> `chase-far` -> `hood` -> `bumper` -> `orbit`). */
+  cycleDriveCamera(): void {
+    if (!this.driveSession || this.store.get().screen !== 'drive') return;
+    this.driveSession.cycleCamera();
+    this.store.set({ drive: this.driveSession.getSnapshot() });
+  }
+
+  /** Toggles headlights & taillights during Open-World Drive Mode. */
+  toggleDriveLights(): void {
+    if (!this.driveSession || this.store.get().screen !== 'drive') return;
+    this.driveSession.toggleLights();
+    this.store.set({ drive: this.driveSession.getSnapshot() });
   }
 
   /** Aims the selector camera at the turntable. */
@@ -761,6 +886,16 @@ export class GarageEngine {
       }
     }
 
+    if (this.driveSession) {
+      if (s.screen === 'drive' && s.busy !== 'exiting-drive') {
+        const nextDrive = this.driveSession.update(dt);
+        if (nextDrive) this.store.set({ drive: nextDrive });
+      }
+      renderer.render(this.scene, this.driveSession.camera);
+      this.updatePerfStats(renderer);
+      return;
+    }
+
     // The turntable keeps turning unless the user has just been looking around.
     if (this.onTurntable && !s.busy) {
       const idle = this.now - this.lastUserMove > IDLE_BEFORE_SPIN;
@@ -812,17 +947,21 @@ export class GarageEngine {
       this.store.set({ lift: { height, target: shop.lift.target, max: shop.lift.maxHeight, moving: shop.lift.moving } });
     }
 
+    this.updatePerfStats(renderer);
+  };
+
+  private updatePerfStats(renderer: THREE.WebGLRenderer): void {
     if (this.now - this.statsSince >= 0.5 && this.frameIndex >= this.frameTimes.length) {
       // The median frame time: what the picture actually runs at, ignoring one-off stalls.
       const median = Float32Array.from(this.frameTimes).sort()[this.frameTimes.length >> 1];
       const fps = Math.round(1 / Math.max(median, 1e-4));
       this.statsSince = this.now;
-      const perf = s.perf;
+      const perf = this.store.get().perf;
       const drawCalls = renderer.info.render.calls;
       const triangles = renderer.info.render.triangles;
       if (perf.fps !== fps || perf.drawCalls !== drawCalls || perf.triangles !== triangles) this.store.set({ perf: { fps, drawCalls, triangles } });
     }
-  };
+  }
 }
 
 const _focus = new THREE.Vector3();

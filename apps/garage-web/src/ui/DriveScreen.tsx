@@ -7,6 +7,7 @@ import { formatTriangles } from './format';
 const WARP_SPOTS = [
   { id: 'start', label: 'Garage Plaza' },
   { id: 'highway', label: 'Highway' },
+  { id: 'canyon', label: 'Canyon Pass' },
   { id: 'proving-grounds', label: 'Crash Proving Grounds' },
 ] as const;
 

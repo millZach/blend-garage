@@ -1,0 +1,22 @@
+{
+  "name": "@blend-garage/world-racing",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@blend-garage/damage-bridge": "*",
+    "@blend-garage/vehicle-core": "*",
+    "@dimforge/rapier3d-compat": "^0.12.0"
+  }
+}

@@ -485,12 +485,10 @@ export class VehicleRig {
       const wheel = this.wheels.find((w) => w.fit.corner === state.corner);
       if (!wheel) continue;
       const wobble = state.wobbleRad ?? 0;
-      const wobbleCamber = wobble > 0 ? Math.sin(state.spinRad) * wobble : 0;
-      const wobbleSteer = wobble > 0 ? Math.cos(state.spinRad) * wobble * 0.65 : 0;
       wheel.hub.position.x = wheel.fit.center.x + wheel.fit.side * trackOffset;
       wheel.hub.position.y = state.suspensionY;
-      wheel.steer.rotation.y = (wheel.fit.front ? state.steerRad : 0) + wobbleSteer;
-      wheel.camber.rotation.z = -wheel.fit.side * camberDeg * DEG + wobbleCamber;
+      wheel.steer.rotation.y = (wheel.fit.front ? state.steerRad : 0) + wobble * 0.55;
+      wheel.camber.rotation.z = -wheel.fit.side * camberDeg * DEG + wobble;
       wheel.spin.rotation.x = state.spinRad;
     }
     this.shadowDirty = true;
