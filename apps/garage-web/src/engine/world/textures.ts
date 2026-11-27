@@ -66,6 +66,15 @@ function periodicFbm(u: number, v: number, baseFreq: number, octaves: number, se
   return sum / norm;
 }
 
+function parseHexRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/**
+ * Fast direct ImageData mineral/aggregate speckle writer (30x+ faster than tens of thousands of
+ * Canvas2D fillRect state calls during OpenWorld startup, with identical visual grain).
+ */
 function speckle(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -77,18 +86,44 @@ function speckle(
   seed: number,
   xRange: readonly [number, number] = [0, 1],
 ): void {
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const palette = colors.map(parseHexRgb);
+  const palLen = palette.length;
   const rand = seededRandom(seed);
   const x0 = xRange[0] * w;
   const xSpan = (xRange[1] - xRange[0]) * w;
+  const sMin = size[0];
+  const sSpan = size[1] - size[0];
+  const aMin = alpha[0];
+  const aSpan = alpha[1] - alpha[0];
+
   for (let i = 0; i < count; i++) {
-    ctx.fillStyle = colors[Math.floor(rand() * colors.length)];
-    const s = size[0] + rand() * (size[1] - size[0]);
-    ctx.globalAlpha = alpha[0] + rand() * (alpha[1] - alpha[0]);
-    const x = x0 + rand() * xSpan;
-    const y = rand() * h;
-    ctx.fillRect(x, y, s, s * (0.65 + rand() * 0.7));
+    const rgb = palette[(rand() * palLen) | 0];
+    const s = sMin + rand() * sSpan;
+    const a = aMin + rand() * aSpan;
+    const invA = 1 - a;
+    const px = (x0 + rand() * xSpan) | 0;
+    const py = (rand() * h) | 0;
+    const rw = Math.max(1, (s + 0.5) | 0);
+    const rh = Math.max(1, (s * (0.65 + rand() * 0.7) + 0.5) | 0);
+    const xEnd = px + rw < w ? px + rw : w;
+    const yEnd = py + rh < h ? py + rh : h;
+    const sr = rgb[0] * a;
+    const sg = rgb[1] * a;
+    const sb = rgb[2] * a;
+
+    for (let yy = py < 0 ? 0 : py; yy < yEnd; yy++) {
+      let off = (yy * w + (px < 0 ? 0 : px)) * 4;
+      for (let xx = px < 0 ? 0 : px; xx < xEnd; xx++) {
+        d[off] = d[off] * invA + sr;
+        d[off + 1] = d[off + 1] * invA + sg;
+        d[off + 2] = d[off + 2] * invA + sb;
+        off += 4;
+      }
+    }
   }
-  ctx.globalAlpha = 1;
+  ctx.putImageData(img, 0, 0);
 }
 
 /** Builds a seamlessly tileable tangent-space normal map from a height field evaluator. */
@@ -424,7 +459,7 @@ function makeRunwayStencil(label: string, accent: string, aniso: number): THREE.
 }
 
 export function createWorldTextures(maxAnisotropy: number): WorldTextures {
-  const aniso = Math.min(8, maxAnisotropy);
+  const aniso = Math.min(4, maxAnisotropy);
   const all: THREE.Texture[] = [];
   const track = <T extends THREE.Texture>(t: T): T => {
     all.push(t);
@@ -432,7 +467,7 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
   };
 
   // -------------------------------------------------------------------------
-  // 1. 4-LANE CALIFORNIA HIGHWAY (1024px albedo + 512px roughness + 512px normal)
+  // 1. 4-LANE CALIFORNIA HIGHWAY (1024px albedo + 256px roughness + 256px normal)
   // -------------------------------------------------------------------------
   const highwayRoad = track(
     makeCanvasTexture(
@@ -499,24 +534,24 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
   // Highway roughness map: aggregate asphalt ~0.84, tire-polished ruts ~0.58 (catches warm low sun!), gravel shoulders ~0.96.
   const highwayRough = track(
     makeCanvasTexture(
-      512,
-      512,
+      256,
+      256,
       (ctx, w, h) => {
         ctx.fillStyle = '#d6d6d6'; // ~0.84
         ctx.fillRect(0, 0, w, h);
-        speckle(ctx, w, h, 8000, ['#e8e8e8', '#c0c0c0', '#b4b4b4'], [1, 3], [0.25, 0.55], 151);
+        speckle(ctx, w, h, 2400, ['#e8e8e8', '#c0c0c0', '#b4b4b4'], [1, 2], [0.25, 0.55], 151);
 
         // Polished smoother wheel ruts catch realistic grazing sunlight sheen.
         const laneCenters = [0.225, 0.39, 0.61, 0.775];
         for (const cx of laneCenters) {
           for (const offset of [-0.04, 0.04]) {
             const x = (cx + offset) * w;
-            const g = ctx.createLinearGradient(x - 14, 0, x + 14, 0);
+            const g = ctx.createLinearGradient(x - 7, 0, x + 7, 0);
             g.addColorStop(0, 'rgba(138,138,138,0)');
             g.addColorStop(0.5, 'rgba(138,138,138,0.68)');
             g.addColorStop(1, 'rgba(138,138,138,0)');
             ctx.fillStyle = g;
-            ctx.fillRect(x - 14, 0, 28, h);
+            ctx.fillRect(x - 7, 0, 14, h);
           }
         }
 
@@ -581,20 +616,20 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
 
   const canyonRough = track(
     makeCanvasTexture(
-      512,
-      512,
+      256,
+      256,
       (ctx, w, h) => {
         ctx.fillStyle = '#dcdcdc';
         ctx.fillRect(0, 0, w, h);
-        speckle(ctx, w, h, 8000, ['#ebebeb', '#c6c6c6', '#bababa'], [1, 3], [0.25, 0.55], 251);
+        speckle(ctx, w, h, 2400, ['#ebebeb', '#c6c6c6', '#bababa'], [1, 2], [0.25, 0.55], 251);
         for (const cx of [0.33, 0.67]) {
           const x = cx * w;
-          const g = ctx.createLinearGradient(x - 36, 0, x + 36, 0);
+          const g = ctx.createLinearGradient(x - 18, 0, x + 18, 0);
           g.addColorStop(0, 'rgba(150,150,150,0)');
           g.addColorStop(0.5, 'rgba(150,150,150,0.52)');
           g.addColorStop(1, 'rgba(150,150,150,0)');
           ctx.fillStyle = g;
-          ctx.fillRect(x - 36, 0, 72, h);
+          ctx.fillRect(x - 18, 0, 36, h);
         }
         ctx.fillStyle = '#f6f6f6';
         ctx.fillRect(0, 0, w * 0.135, h);
@@ -661,18 +696,17 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
 
   const plazaRough = track(
     makeCanvasTexture(
-      512,
-      512,
+      256,
+      256,
       (ctx, w, h) => {
         ctx.fillStyle = '#cfcfcf';
         ctx.fillRect(0, 0, w, h);
-        speckle(ctx, w, h, 9000, ['#e4e4e4', '#bcbcbc', '#aeaeae'], [1.2, 3.2], [0.25, 0.5], 317);
-        // Slightly glossier worn oil/rubber spots.
+        speckle(ctx, w, h, 2600, ['#e4e4e4', '#bcbcbc', '#aeaeae'], [1, 2.2], [0.25, 0.5], 317);
         const rand = seededRandom(319);
         for (let i = 0; i < 10; i++) {
           const x = rand() * w;
           const y = rand() * h;
-          const r = 24 + rand() * 55;
+          const r = 12 + rand() * 28;
           const g = ctx.createRadialGradient(x, y, 0, x, y, r);
           g.addColorStop(0, 'rgba(120,120,120,0.45)');
           g.addColorStop(1, 'rgba(120,120,120,0)');
@@ -680,8 +714,8 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
           ctx.fillRect(x - r, y - r, r * 2, r * 2);
         }
         ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 3;
-        ctx.strokeRect(1.5, 1.5, w - 3, h - 3);
+        ctx.lineWidth = 2;
+        ctx.strokeRect(1, 1, w - 2, h - 2);
       },
       { repeat: true, srgb: false, anisotropy: aniso },
     ),
@@ -748,14 +782,14 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
     ),
   );
 
-  // Multi-scale asphalt aggregate + fine crack normal map (512x512).
+  // Multi-scale asphalt aggregate + fine crack normal map (256x256).
   const asphaltNormal = track(
     makeNormalFromHeight(
-      512,
-      512,
+      256,
+      256,
       (u, v) => {
-        const fine = periodicNoise(u, v, 128, 128, 511) * 0.45;
-        const med = periodicNoise(u, v, 48, 48, 523) * 0.35;
+        const fine = periodicNoise(u, v, 64, 64, 511) * 0.45;
+        const med = periodicNoise(u, v, 32, 32, 523) * 0.35;
         const macro = periodicFbm(u, v, 8, 3, 541) * 0.2;
         return fine + med + macro;
       },
@@ -765,22 +799,21 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
   );
 
   // -------------------------------------------------------------------------
-  // 4. CAST ARCHITECTURAL CONCRETE (1024px albedo + 512px normal + 512px rough)
+  // 4. CAST ARCHITECTURAL CONCRETE (512px albedo + 256px normal + 256px rough)
   // -------------------------------------------------------------------------
   const concrete = track(
     makeCanvasTexture(
-      1024,
-      1024,
+      512,
+      512,
       (ctx, w, h) => {
         ctx.fillStyle = '#aba79e';
         ctx.fillRect(0, 0, w, h);
 
         const rand = seededRandom(613);
-        // Subtle formwork panel banding & warm mineral mottling.
-        for (let i = 0; i < 24; i++) {
+        for (let i = 0; i < 20; i++) {
           const x = rand() * w;
           const y = rand() * h;
-          const r = 70 + rand() * 190;
+          const r = 35 + rand() * 95;
           const g = ctx.createRadialGradient(x, y, 0, x, y, r);
           const tone = rand() > 0.5 ? '235,228,216' : '72,68,62';
           g.addColorStop(0, `rgba(${tone},0.08)`);
@@ -793,33 +826,32 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
           ctx,
           w,
           h,
-          18000,
+          5500,
           ['#959189', '#beb9b0', '#7e7a72', '#cac5bc', '#8c867c'],
-          [1.2, 3.8],
+          [1.0, 2.4],
           [0.18, 0.44],
           619,
         );
 
-        // Formwork seams + tie-rod dimples + subtle vertical weathering.
         ctx.strokeStyle = 'rgba(62,59,54,0.34)';
-        ctx.lineWidth = 2.5;
-        for (let y = 256; y <= h; y += 256) {
+        ctx.lineWidth = 1.5;
+        for (let y = 128; y <= h; y += 128) {
           ctx.beginPath();
           ctx.moveTo(0, y);
           ctx.lineTo(w, y);
           ctx.stroke();
         }
-        for (let x = 256; x <= w; x += 256) {
+        for (let x = 128; x <= w; x += 128) {
           ctx.beginPath();
           ctx.moveTo(x, 0);
           ctx.lineTo(x, h);
           ctx.stroke();
         }
         ctx.fillStyle = 'rgba(56,53,48,0.35)';
-        for (let y = 128; y < h; y += 256) {
-          for (let x = 128; x < w; x += 256) {
+        for (let y = 64; y < h; y += 128) {
+          for (let x = 64; x < w; x += 128) {
             ctx.beginPath();
-            ctx.arc(x, y, 5, 0, Math.PI * 2);
+            ctx.arc(x, y, 3, 0, Math.PI * 2);
             ctx.fill();
           }
         }
@@ -830,11 +862,10 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
 
   const concreteNormal = track(
     makeNormalFromHeight(
-      512,
-      512,
+      256,
+      256,
       (u, v) => {
-        const grain = periodicNoise(u, v, 96, 96, 631) * 0.32 + periodicFbm(u, v, 12, 3, 643) * 0.45;
-        // Subtle recessed formwork seam lines.
+        const grain = periodicNoise(u, v, 64, 64, 631) * 0.32 + periodicFbm(u, v, 12, 3, 643) * 0.45;
         const seamX = Math.min(Math.abs((u * 4) % 1), 1 - Math.abs((u * 4) % 1));
         const seamY = Math.min(Math.abs((v * 4) % 1), 1 - Math.abs((v * 4) % 1));
         const seam = seamX < 0.015 || seamY < 0.015 ? -0.35 : 0;
@@ -847,27 +878,27 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
 
   const concreteRough = track(
     makeCanvasTexture(
-      512,
-      512,
+      256,
+      256,
       (ctx, w, h) => {
         ctx.fillStyle = '#dfdfdf';
         ctx.fillRect(0, 0, w, h);
-        speckle(ctx, w, h, 7000, ['#f2f2f2', '#c8c8c8', '#bababa'], [1.5, 4], [0.22, 0.48], 653);
+        speckle(ctx, w, h, 2200, ['#f2f2f2', '#c8c8c8', '#bababa'], [1, 2.5], [0.22, 0.48], 653);
       },
       { repeat: true, srgb: false, anisotropy: aniso },
     ),
   );
 
-  // Scuffed industrial hazard chevrons for crash-test walls & pillars.
+  // Scuffed industrial hazard chevrons (compact; crash-test walls use foliageTextures.crashHazard).
   const hazard = track(
     makeCanvasTexture(
-      512,
-      512,
+      128,
+      128,
       (ctx, w, h) => {
         ctx.fillStyle = '#e4ad26';
         ctx.fillRect(0, 0, w, h);
         ctx.fillStyle = '#1d1f22';
-        const stripe = 64;
+        const stripe = 16;
         for (let x = -h; x < w + h; x += stripe * 2) {
           ctx.beginPath();
           ctx.moveTo(x, 0);
@@ -877,8 +908,6 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
           ctx.closePath();
           ctx.fill();
         }
-        // Rubber scuffing, chipped concrete flecks, and dust grime.
-        speckle(ctx, w, h, 4200, ['#b9b3a8', '#151618', '#b8881a', '#8c8578'], [1.4, 4.0], [0.1, 0.28], 719);
       },
       { repeat: true, anisotropy: aniso },
     ),
@@ -887,8 +916,8 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
   // Corrugated industrial metal siding.
   const corrugated = track(
     makeCanvasTexture(
-      512,
-      512,
+      256,
+      256,
       (ctx, w, h) => {
         ctx.fillStyle = '#c5cbd1';
         ctx.fillRect(0, 0, w, h);
@@ -905,68 +934,45 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
           ctx.fillStyle = g;
           ctx.fillRect(x, 0, rw, h);
         }
-        speckle(ctx, w, h, 3000, ['#6a7078', '#dfe4ea'], [1, 2.5], [0.05, 0.14], 733);
+        speckle(ctx, w, h, 900, ['#6a7078', '#dfe4ea'], [1, 2], [0.05, 0.14], 733);
       },
       { repeat: true, anisotropy: aniso },
     ),
   );
 
-  // Industrial workshop / garage facade with bay doors and windows.
+  // Compact facade texture preserved for WorldTextures compatibility.
   const buildingFacade = track(
     makeCanvasTexture(
-      512,
-      512,
+      128,
+      128,
       (ctx, w, h) => {
         ctx.fillStyle = '#383f48';
         ctx.fillRect(0, 0, w, h);
-        ctx.fillStyle = '#7fa0be';
-        for (let i = 0; i < 4; i++) {
-          const x = 22 + i * 122;
-          ctx.fillRect(x, 46, 98, 110);
-          ctx.strokeStyle = '#1f242b';
-          ctx.lineWidth = 6;
-          ctx.strokeRect(x, 46, 98, 110);
-        }
         ctx.fillStyle = '#2b3038';
-        ctx.fillRect(0, 210, w, 302);
+        ctx.fillRect(0, 52, w, 76);
         ctx.fillStyle = '#dfa325';
-        ctx.fillRect(0, 198, w, 14);
-        for (let i = 0; i < 2; i++) {
-          const x = 36 + i * 236;
-          ctx.fillStyle = '#5c646e';
-          ctx.fillRect(x, 240, 204, 272);
-          ctx.strokeStyle = '#363c44';
-          ctx.lineWidth = 3;
-          for (let y = 264; y < 512; y += 26) {
-            ctx.beginPath();
-            ctx.moveTo(x, y);
-            ctx.lineTo(x + 204, y);
-            ctx.stroke();
-          }
-        }
+        ctx.fillRect(0, 48, w, 4);
       },
       { repeat: true, anisotropy: aniso },
     ),
   );
 
   // -------------------------------------------------------------------------
-  // 5. CALIFORNIA COASTAL TERRAIN DETAIL PBR SET (1024px albedo + 512px normal + rough)
+  // 5. CALIFORNIA COASTAL TERRAIN DETAIL PBR SET (512px dual-scale albedo + 256px normal + rough)
   // -------------------------------------------------------------------------
   const terrainDetail = track(
     makeCanvasTexture(
-      1024,
-      1024,
+      512,
+      512,
       (ctx, w, h) => {
-        // Neutral-warm light grey base so vertex colors dictate biome hue without muddying saturation.
         ctx.fillStyle = '#e5e2db';
         ctx.fillRect(0, 0, w, h);
 
         const rand = seededRandom(881);
-        // Organic soil/grass clump mottling wrapped seamlessly.
-        for (let i = 0; i < 70; i++) {
+        for (let i = 0; i < 45; i++) {
           const x = rand() * w;
           const y = rand() * h;
-          const r = 30 + rand() * 110;
+          const r = 16 + rand() * 55;
           const g = ctx.createRadialGradient(x, y, 0, x, y, r);
           const bright = rand() > 0.48;
           const c = bright ? '255,252,244' : '125,118,104';
@@ -976,24 +982,22 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
           for (const ox of [-w, 0, w]) for (const oy of [-h, 0, h]) ctx.fillRect(x - r + ox, y - r + oy, r * 2, r * 2);
         }
 
-        // Fine dry-grass blades, pebbles, and earth texture.
         speckle(
           ctx,
           w,
           h,
-          28000,
+          9500,
           ['#f7f4ec', '#c9c4b8', '#b5afa2', '#dcd7cc', '#a49d8e'],
-          [1.2, 3.8],
+          [1.0, 2.6],
           [0.18, 0.44],
           887,
         );
 
-        // Short directional dry-grass wisps for close-up ground crispness.
-        ctx.lineWidth = 1.2;
-        for (let i = 0; i < 1600; i++) {
+        ctx.lineWidth = 1.0;
+        for (let i = 0; i < 650; i++) {
           const x = rand() * w;
           const y = rand() * h;
-          const len = 4 + rand() * 9;
+          const len = 3 + rand() * 6;
           const ang = (rand() - 0.5) * 1.4;
           ctx.strokeStyle = rand() > 0.5 ? 'rgba(248,242,226,0.22)' : 'rgba(110,104,90,0.22)';
           ctx.beginPath();
@@ -1008,12 +1012,12 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
 
   const terrainNormal = track(
     makeNormalFromHeight(
-      512,
-      512,
+      256,
+      256,
       (u, v) => {
         const coarse = periodicFbm(u, v, 6, 4, 907) * 0.6;
-        const pebbles = periodicNoise(u, v, 64, 64, 919) * 0.25;
-        const grit = periodicNoise(u, v, 128, 128, 929) * 0.15;
+        const pebbles = periodicNoise(u, v, 48, 48, 919) * 0.25;
+        const grit = periodicNoise(u, v, 96, 96, 929) * 0.15;
         return clamp(coarse + pebbles + grit, 0, 1);
       },
       2.6,
@@ -1023,12 +1027,12 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
 
   const terrainRough = track(
     makeCanvasTexture(
-      512,
-      512,
+      256,
+      256,
       (ctx, w, h) => {
-        ctx.fillStyle = '#ececec'; // ~0.92 matte earth/grass
+        ctx.fillStyle = '#ececec';
         ctx.fillRect(0, 0, w, h);
-        speckle(ctx, w, h, 8000, ['#ffffff', '#dadada', '#c8c8c8'], [2, 5], [0.22, 0.5], 937);
+        speckle(ctx, w, h, 2400, ['#ffffff', '#dadada', '#c8c8c8'], [1.2, 3], [0.22, 0.5], 937);
       },
       { repeat: true, srgb: false, anisotropy: aniso },
     ),

@@ -4,7 +4,7 @@ import type { WorldColliderDef } from '@blend-garage/world-racing';
 import { assembleWorldColliders } from './colliders';
 import { WorldEnvironment } from './environment';
 import { WorldFX, type Vec3Like } from './fx';
-import { buildWorldProps } from './props';
+import { buildWorldProps, type DistanceCullSector } from './props';
 import { buildRoadVisuals, RoadNetwork, type SpawnName, type WorldSpawnPose } from './roads';
 import { buildTerrain, type TerrainData } from './terrain';
 import { createWorldTextures, type WorldTextures } from './textures';
@@ -33,18 +33,33 @@ export interface WorldFxInputs {
   skidMarks?: readonly WorldSkidInput[];
 }
 
-function toVec3Like(v: WorldPointInput): Vec3Like {
-  return Array.isArray(v) ? { x: v[0], y: v[1], z: v[2] } : v;
+const _carScratch: Vec3Like = { x: 0, y: 0, z: 0 };
+const _hoodScratch: Vec3Like = { x: 0, y: 0, z: 0 };
+const _skidScratch: Vec3Like = { x: 0, y: 0, z: 0 };
+const _sparkPtScratch: Vec3Like = { x: 0, y: 0, z: 0 };
+const _sparkNrmScratch: Vec3Like = { x: 0, y: 0, z: 0 };
+
+function writeVec3Like(v: WorldPointInput, out: Vec3Like): Vec3Like {
+  if (Array.isArray(v)) {
+    out.x = v[0];
+    out.y = v[1];
+    out.z = v[2];
+  } else {
+    out.x = v.x;
+    out.y = v.y;
+    out.z = v.z;
+  }
+  return out;
 }
 
 /**
  * Self-contained pure-TypeScript 3D Open World for Blend Garage Drive Mode:
- * - Sculpted 1200x1200m valley + canyon terrain seamlessly blended to paved roads
+ * - Sculpted 1200x1200m valley + canyon terrain seamlessly blended to paved roads (4x4 frustum-cullable tiles)
  * - Blend Garage Exterior Spawn Plaza, 4-lane Highway Loop & Straightaway, Winding Canyon Pass,
  *   and Crash-Test & Stunt Proving Grounds (impact walls, crash pillars, stunt ramp, slalom, speed bumps)
  * - Exact matching `@blend-garage/world-racing` `WorldColliderDef[]`
- * - Daylight sky dome, car-following directional sun shadows, outdoor PMREM reflection map & fog
- * - Pooled crash sparks, tire skidmarks, and engine smoke visual FX
+ * - Early-Z atmospheric sky dome, car-following directional sun shadows, outdoor PMREM reflection map & fog
+ * - Pooled crash sparks, tire skidmarks, and engine smoke visual FX + distance-culled micro-detail sectors
  */
 export class OpenWorld {
   readonly group = new THREE.Group();
@@ -55,6 +70,9 @@ export class OpenWorld {
   private environment: WorldEnvironment | null = null;
   private fx: WorldFX | null = null;
   private colliders: WorldColliderDef[] = [];
+  private cullableSectors: DistanceCullSector[] = [];
+  private lastCullX = Number.NaN;
+  private lastCullZ = Number.NaN;
 
   private readonly ownedGeometries: THREE.BufferGeometry[] = [];
   private readonly ownedMaterials: THREE.Material[] = [];
@@ -77,10 +95,10 @@ export class OpenWorld {
     const maxAniso = renderer.capabilities.getMaxAnisotropy();
     this.textures = createWorldTextures(maxAniso);
 
-    // 1. Sculpted terrain + distant mountain range + matching physics height grid.
+    // 1. Sculpted terrain (4x4 frustum-cullable tiles) + distant mountain range + matching physics height grid.
     this.terrain = buildTerrain(this.roadNetwork, this.textures);
-    this.ownedGeometries.push(this.terrain.geometry, this.terrain.distantGeometry);
-    this.ownedMaterials.push(this.terrain.material);
+    this.ownedGeometries.push(...this.terrain.geometries, this.terrain.distantGeometry);
+    this.ownedMaterials.push(this.terrain.material, this.terrain.distantMaterial);
     this.group.add(this.terrain.mesh, this.terrain.distantMesh);
 
     // 2. Road ribbons, Spawn Plaza, Proving Grounds apron & markings.
@@ -89,10 +107,11 @@ export class OpenWorld {
     this.ownedMaterials.push(...roads.materials);
     this.group.add(roads.group);
 
-    // 3. Architecture, Crash Proving Grounds, Gantries, Instanced Vegetation & Props.
+    // 3. Architecture, Crash Proving Grounds, Gantries, Spatially-Chunked Vegetation & Props.
     const props = buildWorldProps(this.roadNetwork, this.terrain, this.textures);
     this.ownedGeometries.push(...props.geometries);
     this.ownedMaterials.push(...props.materials);
+    this.cullableSectors = props.cullableSectors;
     this.group.add(props.group);
 
     // 4. Assemble exact static physics colliders matching every visual surface & obstacle.
@@ -107,35 +126,60 @@ export class OpenWorld {
     scene.add(this.group);
 
     const start = this.getSpawnPoint('start');
-    this.environment.update(start.position[0], start.position[1], start.position[2]);
+    this.updateSectorVisibility(start.position[0], start.position[2], true);
+    this.environment.update(start.position[0], start.position[1], start.position[2], 0, start.headingRad);
   }
 
   /**
-   * Advances dynamic world systems (sun shadow frustum tracking, sky centering, sparks, smoke, skidmarks).
+   * Advances dynamic world systems (sun shadow frustum tracking, sky centering, sparks, smoke, skidmarks,
+   * and lightweight distance culling of micro ground-cover sectors).
    */
   update(dt: number, carWorldPose: WorldCarPoseInput, fxInputs?: WorldFxInputs): void {
     if (!this.mounted || this.disposed) return;
 
-    const pos = toVec3Like(carWorldPose.position);
-    this.environment?.update(pos.x, pos.y, pos.z, dt);
+    const pos = writeVec3Like(carWorldPose.position, _carScratch);
+    this.environment?.update(pos.x, pos.y, pos.z, dt, carWorldPose.headingRad);
+    this.updateSectorVisibility(pos.x, pos.z, false);
 
     if (this.fx) {
       if (fxInputs?.hoodWorldPos && typeof fxInputs.engineHealth === 'number') {
-        this.fx.updateEngineSmoke(dt, toVec3Like(fxInputs.hoodWorldPos), fxInputs.engineHealth);
+        this.fx.updateEngineSmoke(dt, writeVec3Like(fxInputs.hoodWorldPos, _hoodScratch), fxInputs.engineHealth);
       }
       if (fxInputs?.skidMarks) {
         for (let i = 0; i < fxInputs.skidMarks.length; i++) {
           const s = fxInputs.skidMarks[i];
-          this.fx.addSkidMark(s.wheelKey, toVec3Like(s.contactPoint), s.headingRad, s.width, s.opacity);
+          this.fx.addSkidMark(s.wheelKey, writeVec3Like(s.contactPoint, _skidScratch), s.headingRad, s.width, s.opacity);
         }
       }
       this.fx.update(dt);
     }
   }
 
+  private updateSectorVisibility(x: number, z: number, force: boolean): void {
+    const sectors = this.cullableSectors;
+    if (sectors.length === 0) return;
+    if (!force && Number.isFinite(this.lastCullX)) {
+      const dx = x - this.lastCullX;
+      const dz = z - this.lastCullZ;
+      if (dx * dx + dz * dz < 64) return; // Update only after moving > 8m
+    }
+    this.lastCullX = x;
+    this.lastCullZ = z;
+    for (let i = 0; i < sectors.length; i++) {
+      const s = sectors[i];
+      const dx = s.cx - x;
+      const dz = s.cz - z;
+      s.object.visible = dx * dx + dz * dz <= s.maxDistSq;
+    }
+  }
+
   /** Triggers a pooled incandescent spark burst at a world crash impact point. */
   emitCrashSparks(worldPoint: WorldPointInput, worldNormal: WorldPointInput, intensity = 1.0): void {
-    this.fx?.emitCrashSparks(toVec3Like(worldPoint), toVec3Like(worldNormal), intensity);
+    this.fx?.emitCrashSparks(
+      writeVec3Like(worldPoint, _sparkPtScratch),
+      writeVec3Like(worldNormal, _sparkNrmScratch),
+      intensity,
+    );
   }
 
   /** Appends a tire skidmark segment for a wheel contact point. */
@@ -146,17 +190,20 @@ export class OpenWorld {
     width = 0.28,
     opacity = 0.65,
   ): void {
-    this.fx?.addSkidMark(wheelKey, toVec3Like(worldPos), headingRad, width, opacity);
+    this.fx?.addSkidMark(wheelKey, writeVec3Like(worldPos, _skidScratch), headingRad, width, opacity);
   }
 
   /** Emits hood smoke puffs when `engineHealth < 0.6`. */
   updateEngineSmoke(dt: number, hoodWorldPos: WorldPointInput, engineHealth: number): void {
-    this.fx?.updateEngineSmoke(dt, toVec3Like(hoodWorldPos), engineHealth);
+    this.fx?.updateEngineSmoke(dt, writeVec3Like(hoodWorldPos, _hoodScratch), engineHealth);
   }
 
   /** Clears transient spark/smoke/skid state (useful on car warp or repair). */
   clearFx(): void {
     this.fx?.clear();
+    this.environment?.invalidateShadows();
+    this.lastCullX = Number.NaN;
+    this.lastCullZ = Number.NaN;
   }
 
   /** Returns all static physics colliders matching `@blend-garage/world-racing`'s `WorldColliderDef[]`. */
@@ -215,6 +262,7 @@ export class OpenWorld {
       this.textures = null;
     }
 
+    this.cullableSectors = [];
     this.colliders = [];
     this.terrain = null;
     this.group.removeFromParent();

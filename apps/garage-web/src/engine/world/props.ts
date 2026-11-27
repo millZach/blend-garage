@@ -8,11 +8,87 @@ import type { RoadNetwork } from './roads';
 import type { TerrainData } from './terrain';
 import type { WorldTextures } from './textures';
 
+export interface DistanceCullSector {
+  object: THREE.Object3D;
+  cx: number;
+  cz: number;
+  maxDistSq: number;
+}
+
 export interface WorldPropsResult {
   group: THREE.Group;
   geometries: THREE.BufferGeometry[];
   materials: THREE.Material[];
   colliders: WorldColliderDef[];
+  cullableSectors: DistanceCullSector[];
+}
+
+/**
+ * Splits a world-spanning collection of instanced transforms into tight spatial sectors so
+ * Three.js frustum culling skips out-of-view sectors in BOTH the main pass and the 60m shadow pass.
+ */
+function addChunkedInstances(
+  parent: THREE.Group,
+  geometry: THREE.BufferGeometry,
+  material: THREE.Material,
+  namePrefix: string,
+  matrices: readonly THREE.Matrix4[],
+  colors: readonly THREE.Color[] | null,
+  options: {
+    sectorSize: number;
+    castShadow: boolean;
+    receiveShadow: boolean;
+    maxDistance?: number;
+    cullList?: DistanceCullSector[];
+  },
+): void {
+  if (matrices.length === 0) return;
+  const invSector = 1 / options.sectorSize;
+  const buckets = new Map<string, number[]>();
+
+  for (let i = 0; i < matrices.length; i++) {
+    const e = matrices[i].elements;
+    const sx = Math.floor(e[12] * invSector);
+    const sz = Math.floor(e[14] * invSector);
+    const key = `${sx},${sz}`;
+    let list = buckets.get(key);
+    if (!list) {
+      list = [];
+      buckets.set(key, list);
+    }
+    list.push(i);
+  }
+
+  let sectorIndex = 0;
+  for (const indices of buckets.values()) {
+    const inst = new THREE.InstancedMesh(geometry, material, indices.length);
+    inst.name = `${namePrefix}:${sectorIndex++}`;
+    inst.castShadow = options.castShadow;
+    inst.receiveShadow = options.receiveShadow;
+    inst.matrixAutoUpdate = false;
+
+    for (let k = 0; k < indices.length; k++) {
+      const srcIdx = indices[k];
+      inst.setMatrixAt(k, matrices[srcIdx]);
+      if (colors) inst.setColorAt(k, colors[srcIdx]);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    inst.computeBoundingBox();
+    inst.computeBoundingSphere();
+    parent.add(inst);
+
+    if (options.maxDistance !== undefined && options.cullList && inst.boundingSphere) {
+      const bs = inst.boundingSphere;
+      const effDist = options.maxDistance + bs.radius;
+      options.cullList.push({
+        object: inst,
+        cx: bs.center.x,
+        cz: bs.center.z,
+        maxDistSq: effDist * effDist,
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,8 +241,8 @@ function buildTaperedBranchTube(
 }
 
 /**
- * Builds a 2x2 subdivided curved foliage frond/card (8 tris) so botanical leaves & boughs
- * read as volumetric 3D forms rather than flat intersecting paper planes.
+ * Builds a curved foliage frond/card (default 1x2 = 4 tris, or 1x1 = 2 tris) so botanical leaves
+ * & boughs read as arched volumetric 3D forms at half the vertex cost of 2x2 cards.
  */
 function buildCurvedCard(
   width: number,
@@ -175,9 +251,9 @@ function buildCurvedCard(
   droopY: number,
   cupY: number,
   pivotAtBase: boolean,
+  segX = 1,
+  segZ = 2,
 ): THREE.BufferGeometry {
-  const segX = 2;
-  const segZ = 2;
   const cols = segX + 1;
   const rows = segZ + 1;
   const positions = new Float32Array(cols * rows * 3);
@@ -192,7 +268,7 @@ function buildCurvedCard(
       const u = ix / segX;
       const nx = u * 2 - 1;
       const x = nx * width * 0.5;
-      const y = arch - nx * nx * cupY;
+      const y = arch - (segX >= 2 ? nx * nx * cupY : 0);
       const vi = iz * cols + ix;
       positions[vi * 3] = x;
       positions[vi * 3 + 1] = y;
@@ -223,7 +299,7 @@ function buildCurvedCard(
 /**
  * Coastal Pine / California Conifer:
  * - Crooked tapered bark trunk with flared root collar + upper woody bough stubs
- * - 8 staggered whorls of arched 3D pine-bough fronds + vertical infill sprays
+ * - 7 staggered whorls of arched 3D pine-bough fronds + vertical infill sprays
  * - Outward-upward ellipsoidal botanical vertex normals + interior canopy AO vertex colors
  */
 function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry } {
@@ -232,44 +308,39 @@ function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: TH
   // 1. Crooked tapered trunk + protruding woody limb stubs
   const trunkPts = [
     new THREE.Vector3(0.0, -0.75, 0.0),
-    new THREE.Vector3(0.0, 0.25, 0.0),
-    new THREE.Vector3(0.06, 2.2, -0.04),
-    new THREE.Vector3(0.11, 4.6, 0.05),
-    new THREE.Vector3(0.04, 7.2, 0.08),
-    new THREE.Vector3(-0.04, 9.6, 0.02),
-    new THREE.Vector3(0.0, 11.4, 0.0),
+    new THREE.Vector3(0.0, 0.35, 0.0),
+    new THREE.Vector3(0.09, 3.4, 0.02),
+    new THREE.Vector3(0.04, 7.1, 0.07),
+    new THREE.Vector3(0.0, 11.2, 0.0),
   ];
-  const trunkRadii = [0.46, 0.34, 0.26, 0.21, 0.15, 0.09, 0.035];
-  const trunkParts: THREE.BufferGeometry[] = [buildTaperedBranchTube(trunkPts, trunkRadii, 7, 0.65, 0.56, 0.92)];
+  const trunkRadii = [0.46, 0.33, 0.23, 0.14, 0.035];
+  const trunkParts: THREE.BufferGeometry[] = [buildTaperedBranchTube(trunkPts, trunkRadii, 6, 0.65, 0.56, 0.92)];
 
-  // Woody branch stubs emerging into lower & mid pine whorls
-  const stubHeights = [2.9, 3.6, 4.4, 5.2, 6.1, 7.0];
+  const stubHeights = [3.1, 4.3, 5.6, 6.9];
   for (let i = 0; i < stubHeights.length; i++) {
     const h = stubHeights[i];
     const ang = i * 2.39996 + 0.4;
-    const len = lerp(1.35, 0.72, i / stubHeights.length);
+    const len = lerp(1.3, 0.72, i / stubHeights.length);
     const dirX = Math.cos(ang);
     const dirZ = Math.sin(ang);
     const pts = [
       new THREE.Vector3(0, h, 0),
-      new THREE.Vector3(dirX * len * 0.55, h + 0.14, dirZ * len * 0.55),
-      new THREE.Vector3(dirX * len, h - 0.12, dirZ * len),
+      new THREE.Vector3(dirX * len, h - 0.04, dirZ * len),
     ];
-    trunkParts.push(buildTaperedBranchTube(pts, [0.095, 0.065, 0.03], 5, 0.8, 0.52, 0.78));
+    trunkParts.push(buildTaperedBranchTube(pts, [0.09, 0.03], 4, 0.8, 0.52, 0.78));
   }
   const trunk = mergeColoredParts(trunkParts);
 
   // 2. Multi-whorl 3D curved pine boughs (ZERO cones!)
   const canopyParts: THREE.BufferGeometry[] = [];
   const tiers: readonly { y: number; count: number; len: number; wid: number; pitch: number; droop: number; yawOff: number }[] = [
-    { y: 2.75, count: 5, len: 3.15, wid: 2.45, pitch: 0.24, droop: 0.45, yawOff: 0.1 },
-    { y: 3.95, count: 5, len: 2.95, wid: 2.32, pitch: 0.19, droop: 0.38, yawOff: 0.72 },
-    { y: 5.15, count: 5, len: 2.68, wid: 2.12, pitch: 0.13, droop: 0.32, yawOff: 0.38 },
-    { y: 6.35, count: 5, len: 2.35, wid: 1.92, pitch: 0.06, droop: 0.26, yawOff: 1.04 },
-    { y: 7.50, count: 5, len: 1.98, wid: 1.68, pitch: -0.05, droop: 0.20, yawOff: 0.55 },
-    { y: 8.60, count: 4, len: 1.62, wid: 1.44, pitch: -0.18, droop: 0.14, yawOff: 1.25 },
-    { y: 9.60, count: 4, len: 1.28, wid: 1.20, pitch: -0.34, droop: 0.10, yawOff: 0.45 },
-    { y: 10.45, count: 3, len: 1.25, wid: 0.98, pitch: -0.78, droop: 0.06, yawOff: 0.9 },
+    { y: 2.80, count: 5, len: 3.20, wid: 2.55, pitch: 0.24, droop: 0.45, yawOff: 0.1 },
+    { y: 4.15, count: 5, len: 2.95, wid: 2.38, pitch: 0.18, droop: 0.36, yawOff: 0.72 },
+    { y: 5.50, count: 4, len: 2.65, wid: 2.18, pitch: 0.11, droop: 0.28, yawOff: 0.38 },
+    { y: 6.80, count: 4, len: 2.28, wid: 1.92, pitch: 0.02, droop: 0.22, yawOff: 1.04 },
+    { y: 8.05, count: 4, len: 1.86, wid: 1.64, pitch: -0.10, droop: 0.16, yawOff: 0.55 },
+    { y: 9.25, count: 4, len: 1.44, wid: 1.32, pitch: -0.28, droop: 0.10, yawOff: 1.25 },
+    { y: 10.35, count: 3, len: 1.28, wid: 1.02, pitch: -0.76, droop: 0.06, yawOff: 0.85 },
   ];
 
   const m = new THREE.Matrix4();
@@ -284,7 +355,7 @@ function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: TH
       const yaw = tier.yawOff + (k / tier.count) * Math.PI * 2 + (rand() - 0.5) * 0.24;
       const lenJitter = tier.len * (0.88 + rand() * 0.24);
       const widJitter = tier.wid * (0.90 + rand() * 0.20);
-      const card = buildCurvedCard(widJitter, lenJitter, 0.18, tier.droop, 0.24, true);
+      const card = buildCurvedCard(widJitter, lenJitter, 0.24, tier.droop, 0.0, true, 1, 2);
       const roll = (rand() - 0.5) * 0.28;
       e.set(tier.pitch + (rand() - 0.5) * 0.09, yaw, roll, 'YXZ');
       q.setFromEuler(e);
@@ -293,9 +364,9 @@ function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: TH
       card.applyMatrix4(m);
       canopyParts.push(card);
 
-      // Add a tilted cross-bough on lower/mid tiers so eye-level silhouettes are lush and non-pancaked.
+      // Tilted cross-boughs across lower/mid/upper tiers so silhouettes stay lush & volumetric.
       if (ti < 5 && k % 2 === 0) {
-        const crossCard = buildCurvedCard(widJitter * 0.85, lenJitter * 0.88, 0.12, tier.droop * 0.6, 0.18, true);
+        const crossCard = buildCurvedCard(widJitter * 0.88, lenJitter * 0.90, 0.16, tier.droop * 0.55, 0.0, true, 1, 2);
         e.set(tier.pitch - 0.18, yaw + 0.34, (k % 4 === 0 ? 1 : -1) * 0.72, 'YXZ');
         q.setFromEuler(e);
         p.set(Math.sin(yaw + 0.34) * 0.12, tier.y + 0.32, Math.cos(yaw + 0.34) * 0.12);
@@ -308,7 +379,6 @@ function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: TH
 
   const canopy = mergeColoredParts(canopyParts);
 
-  // Transfer smooth outward-upward botanical normals + canopy AO vertex colors!
   const posAttr = canopy.attributes.position as THREE.BufferAttribute;
   const normAttr = canopy.attributes.normal as THREE.BufferAttribute;
   const colAttr = canopy.attributes.color as THREE.BufferAttribute;
@@ -322,11 +392,9 @@ function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: TH
     const expectedRad = lerp(2.9, 0.5, heightT);
     const radialT = clamp(horiz / Math.max(0.5, expectedRad), 0, 1);
 
-    // Smooth ellipsoidal outward + upward normal prevents dark card backface seams.
     n.set(v.x, (v.y - 6.1) * 0.55 + 1.55, v.z).normalize();
     normAttr.setXYZ(i, n.x, n.y, n.z);
 
-    // Interior deep pine shadow -> warm sunlit outer tips
     const ao = lerp(0.58, 1.05, clamp(radialT * 0.62 + heightT * 0.52, 0, 1));
     colAttr.setXYZ(i, ao * lerp(0.88, 1.04, heightT), ao * lerp(0.95, 1.01, heightT), ao * lerp(0.88, 0.93, heightT));
   }
@@ -339,7 +407,7 @@ function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: TH
 /**
  * California Live Oak / Broadleaf Tree:
  * - Gnarled flared trunk forking into 4 spreading primary boughs & 4 secondary branches
- * - 26 cupped broadleaf cluster cards arranged in 5 asymmetric natural canopy lobes (ZERO spheres!)
+ * - 21 cupped broadleaf cluster cards arranged in 5 asymmetric natural canopy lobes (ZERO spheres!)
  * - Blended spherical-lobe outward normals + deep interior canopy AO vertex colors
  */
 function buildCaliforniaOakGeometries(): { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry } {
@@ -348,12 +416,12 @@ function buildCaliforniaOakGeometries(): { trunk: THREE.BufferGeometry; canopy: 
   // 1. Multi-forked oak trunk & spreading boughs
   const mainTrunk = [
     new THREE.Vector3(0, -0.75, 0),
-    new THREE.Vector3(0.02, 0.3, 0.01),
+    new THREE.Vector3(0.02, 0.35, 0.01),
     new THREE.Vector3(0.08, 1.35, -0.05),
     new THREE.Vector3(0.04, 2.35, 0.02),
   ];
   const trunkParts: THREE.BufferGeometry[] = [
-    buildTaperedBranchTube(mainTrunk, [0.54, 0.39, 0.33, 0.29], 8, 0.55, 0.52, 0.85),
+    buildTaperedBranchTube(mainTrunk, [0.54, 0.39, 0.33, 0.29], 6, 0.55, 0.52, 0.85),
   ];
 
   const limbs: readonly { dx: number; dz: number; midY: number; tipY: number; reach: number; r0: number }[] = [
@@ -372,15 +440,14 @@ function buildCaliforniaOakGeometries(): { trunk: THREE.BufferGeometry; canopy: 
     const start = new THREE.Vector3(0.04, 2.15, 0.02);
     const mid = new THREE.Vector3(l.dx * l.reach * 0.52, l.midY, l.dz * l.reach * 0.52);
     const tip = new THREE.Vector3(l.dx * l.reach, l.tipY, l.dz * l.reach);
-    trunkParts.push(buildTaperedBranchTube([start, mid, tip], [l.r0, l.r0 * 0.65, 0.06], 6, 0.65, 0.56, 0.82));
+    trunkParts.push(buildTaperedBranchTube([start, mid, tip], [l.r0, l.r0 * 0.65, 0.06], 5, 0.65, 0.56, 0.82));
 
-    // Secondary ascending fork from mid-limb toward upper crown
     const subTip = new THREE.Vector3(
       l.dx * l.reach * 0.72 + (rand() - 0.5) * 0.6,
       l.tipY + 0.95,
       l.dz * l.reach * 0.72 + (rand() - 0.5) * 0.6,
     );
-    trunkParts.push(buildTaperedBranchTube([mid, subTip], [l.r0 * 0.55, 0.05], 5, 0.7, 0.55, 0.80));
+    trunkParts.push(buildTaperedBranchTube([mid, subTip], [l.r0 * 0.55, 0.05], 4, 0.7, 0.55, 0.80));
 
     lobeCenters.push({ c: new THREE.Vector3(tip.x * 0.92, tip.y + 0.35, tip.z * 0.92), rad: 1.95 });
   }
@@ -396,14 +463,14 @@ function buildCaliforniaOakGeometries(): { trunk: THREE.BufferGeometry; canopy: 
 
   for (let li = 0; li < lobeCenters.length; li++) {
     const lobe = lobeCenters[li];
-    const cardCount = li === 0 ? 7 : 5;
+    const cardCount = li === 0 ? 5 : 4;
     for (let k = 0; k < cardCount; k++) {
       const az = (k / cardCount) * Math.PI * 2 + li * 0.8 + (rand() - 0.5) * 0.35;
       const elev = (k === 0 ? 0.55 : -0.1 + rand() * 0.55);
       const dist = lobe.rad * (k === 0 ? 0.22 : 0.42 + rand() * 0.34);
-      const size = (li === 0 ? 2.65 : 2.35) * (0.85 + rand() * 0.28);
+      const size = (li === 0 ? 2.85 : 2.52) * (0.86 + rand() * 0.26);
 
-      const card = buildCurvedCard(size, size * (0.9 + rand() * 0.2), 0.22, 0.14, 0.26, false);
+      const card = buildCurvedCard(size, size * (0.9 + rand() * 0.2), 0.22, 0.14, 0.24, false, 1, 2);
 
       pos.set(
         lobe.c.x + Math.cos(az) * Math.cos(elev) * dist,
@@ -411,7 +478,6 @@ function buildCaliforniaOakGeometries(): { trunk: THREE.BufferGeometry; canopy: 
         lobe.c.z + Math.sin(az) * Math.cos(elev) * dist,
       );
 
-      // Mix of dome-tilted outer cards and steeper side-facing volume cards
       const pitch = k === 0 ? (rand() - 0.5) * 0.3 : 0.45 + rand() * 0.85;
       const roll = (rand() - 0.5) * 0.55;
       e.set(pitch, az + Math.PI * 0.5, roll, 'YXZ');
@@ -424,7 +490,6 @@ function buildCaliforniaOakGeometries(): { trunk: THREE.BufferGeometry; canopy: 
 
   const canopy = mergeColoredParts(canopyParts);
 
-  // Smooth outward spherical-lobe normals + lush interior crown AO!
   const posAttr = canopy.attributes.position as THREE.BufferAttribute;
   const normAttr = canopy.attributes.normal as THREE.BufferAttribute;
   const colAttr = canopy.attributes.color as THREE.BufferAttribute;
@@ -484,8 +549,7 @@ function buildGrassTuftGeometry(): THREE.BufferGeometry {
   for (let i = 0; i < angles.length; i++) {
     const w = 1.32;
     const h = 0.86;
-    const g = new THREE.PlaneGeometry(w, h, 2, 2);
-    // Shift base to y = -0.06 and curve upper tips slightly outward for 3D volume.
+    const g = new THREE.PlaneGeometry(w, h, 1, 2);
     const pos = g.attributes.position as THREE.BufferAttribute;
     const col = new Float32Array(pos.count * 3);
     for (let vi = 0; vi < pos.count; vi++) {
@@ -511,7 +575,6 @@ function buildGrassTuftGeometry(): THREE.BufferGeometry {
   }
 
   const merged = mergeColoredParts(parts);
-  // Soft upward terrain-blended normals so crossed grass cards never show harsh lighting seams.
   const posAttr = merged.attributes.position as THREE.BufferAttribute;
   const normAttr = merged.attributes.normal as THREE.BufferAttribute;
   const n = new THREE.Vector3();
@@ -524,7 +587,7 @@ function buildGrassTuftGeometry(): THREE.BufferGeometry {
 }
 
 /**
- * Low California sagebrush / chaparral bush built from 8 angled cupped leaf-cluster cards.
+ * Low California sagebrush / chaparral bush built from 6 angled leaf-cluster cards (12 tris total).
  */
 function buildChaparralShrubGeometry(): THREE.BufferGeometry {
   const rand = seededRandom(5317);
@@ -535,11 +598,11 @@ function buildChaparralShrubGeometry(): THREE.BufferGeometry {
   const p = new THREE.Vector3();
   const sc = new THREE.Vector3(1, 1, 1);
 
-  for (let i = 0; i < 8; i++) {
-    const az = (i / 8) * Math.PI * 2 + (rand() - 0.5) * 0.35;
+  for (let i = 0; i < 6; i++) {
+    const az = (i / 6) * Math.PI * 2 + (rand() - 0.5) * 0.35;
     const r = i < 2 ? 0.18 : 0.42 + rand() * 0.24;
-    const size = i < 2 ? 1.35 : 1.12 + rand() * 0.26;
-    const card = buildCurvedCard(size, size * 0.92, 0.16, 0.12, 0.22, false);
+    const size = i < 2 ? 1.42 : 1.18 + rand() * 0.26;
+    const card = buildCurvedCard(size, size * 0.92, 0.14, 0.10, 0.18, false, 1, 1);
     const pitch = i < 2 ? 0.22 : 0.65 + rand() * 0.45;
     e.set(pitch, az + Math.PI * 0.5, (rand() - 0.5) * 0.4, 'YXZ');
     q.setFromEuler(e);
@@ -718,23 +781,17 @@ function buildWBeamGuardrailGeometry(): THREE.BufferGeometry {
 }
 
 /**
- * Guardrail vertical steel I-beam post with top offset spacer blockout holding the W-beam.
+ * Guardrail vertical steel post with top offset spacer blockout holding the W-beam (24 tris).
  */
 function buildGuardrailPostGeometry(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const postH = 1.08;
-  // I-beam flanges & web (centered at y = 0.30 so it embeds -0.24m below road shoulder)
-  const web = new THREE.BoxGeometry(0.11, postH, 0.024);
-  web.translate(0, 0.30, 0);
-  const f1 = new THREE.BoxGeometry(0.024, postH, 0.11);
-  f1.translate(0.052, 0.30, 0);
-  const f2 = new THREE.BoxGeometry(0.024, postH, 0.11);
-  f2.translate(-0.052, 0.30, 0);
-  // Offset spacer blockout at W-beam elevation
+  const stem = new THREE.BoxGeometry(0.11, postH, 0.10);
+  stem.translate(0, 0.30, 0);
   const blockout = new THREE.BoxGeometry(0.16, 0.34, 0.12);
   blockout.translate(0.0, 0.62, 0);
 
-  parts.push(tintGeometry(web, 0x7c848d), tintGeometry(f1, 0x8a929b), tintGeometry(f2, 0x8a929b), tintGeometry(blockout, 0x4b5158));
+  parts.push(tintGeometry(stem, 0x848c95), tintGeometry(blockout, 0x4b5158));
   return mergeColoredParts(parts);
 }
 
@@ -818,43 +875,36 @@ function buildJerseyBarrierGeometry(length: number, height = 1.08, baseWidth = 0
 function buildCobraStreetlampGeometries(): { structure: THREE.BufferGeometry; lens: THREE.BufferGeometry } {
   const parts: THREE.BufferGeometry[] = [];
 
-  // Concrete anchor pedestal (extends -0.35m into ground so zero floating on sloped verges)
-  const plinth = new THREE.CylinderGeometry(0.24, 0.28, 1.0, 8);
+  const plinth = new THREE.CylinderGeometry(0.24, 0.28, 1.0, 6);
   plinth.translate(0, 0.15, 0);
   parts.push(tintGeometry(plinth, 0x9b9890));
 
-  // Galvanized base bolt flange
-  const flange = new THREE.CylinderGeometry(0.18, 0.21, 0.08, 8);
+  const flange = new THREE.CylinderGeometry(0.18, 0.21, 0.08, 6);
   flange.translate(0, 0.69, 0);
   parts.push(tintGeometry(flange, 0x707882));
 
-  // Tapered galvanized shaft (y = 0.72..7.55)
-  const shaft = new THREE.CylinderGeometry(0.072, 0.135, 6.85, 8);
+  const shaft = new THREE.CylinderGeometry(0.072, 0.135, 6.85, 6);
   shaft.translate(0, 4.14, 0);
   parts.push(tintGeometry(shaft, 0xb2bac2));
 
-  // Swept curved gooseneck mast arm reaching out over the roadway (+Z)
   const armPts = [
     new THREE.Vector3(0, 7.25, 0.0),
-    new THREE.Vector3(0, 7.62, 0.35),
-    new THREE.Vector3(0, 7.90, 0.85),
-    new THREE.Vector3(0, 8.02, 1.45),
+    new THREE.Vector3(0, 7.72, 0.55),
+    new THREE.Vector3(0, 8.00, 1.35),
     new THREE.Vector3(0, 7.98, 2.15),
   ];
-  const arm = buildTaperedBranchTube(armPts, [0.064, 0.056, 0.050, 0.044, 0.040], 6, 0.5, 0.84, 0.92);
+  const arm = buildTaperedBranchTube(armPts, [0.064, 0.054, 0.046, 0.040], 5, 0.5, 0.84, 0.92);
   parts.push(tintGeometry(arm, 0xaab2ba));
 
-  // Die-cast aerodynamic cobra-head luminaire housing
   const neck = new THREE.BoxGeometry(0.20, 0.12, 0.38);
   neck.translate(0, 7.97, 2.24);
-  const head = new THREE.CylinderGeometry(0.20, 0.26, 0.14, 8);
+  const head = new THREE.CylinderGeometry(0.20, 0.26, 0.14, 6);
   head.scale(0.88, 1.0, 1.75);
   head.translate(0, 7.98, 2.60);
   parts.push(tintGeometry(neck, 0x5c646e), tintGeometry(head, 0x67707b));
 
   const structure = mergeColoredParts(parts);
 
-  // Warm glass diffuser lens tucked cleanly beneath the cobra head
   const lens = new THREE.BoxGeometry(0.32, 0.06, 0.58);
   lens.translate(0, 7.89, 2.62);
 
@@ -873,13 +923,13 @@ function buildTrafficConeGeometry(): THREE.BufferGeometry {
 
   const segs: readonly [y0: number, y1: number, r0: number, r1: number, hex: number][] = [
     [0.05, 0.43, 0.165, 0.105, 0xf96316],
-    [0.43, 0.52, 0.105, 0.091, 0xf4f6f8], // lower white retroreflective collar
+    [0.43, 0.52, 0.105, 0.091, 0xf4f6f8],
     [0.52, 0.59, 0.091, 0.080, 0xf96316],
-    [0.59, 0.68, 0.080, 0.066, 0xf4f6f8], // upper white retroreflective collar
+    [0.59, 0.68, 0.080, 0.066, 0xf4f6f8],
     [0.68, 0.78, 0.066, 0.044, 0xf96316],
   ];
   for (const [y0, y1, r0, r1, hex] of segs) {
-    const g = new THREE.CylinderGeometry(r1, r0, y1 - y0, 10);
+    const g = new THREE.CylinderGeometry(r1, r0, y1 - y0, 7, 1, y0 > 0.05 && y1 < 0.78);
     g.translate(0, (y0 + y1) * 0.5, 0);
     parts.push(tintGeometry(g, hex));
   }
@@ -1035,6 +1085,7 @@ export function buildWorldProps(
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
   const colliders: WorldColliderDef[] = [];
+  const cullableSectors: DistanceCullSector[] = [];
 
   const trackMat = <T extends THREE.Material>(m: T): T => {
     materials.push(m);
@@ -1279,6 +1330,17 @@ export function buildWorldProps(
   batcher.useWorldUv(lightCladdingMat, 5.0);
   // Note: bayDoorMat and glassWindowMat keep explicit per-panel UVs (no worldUv).
 
+  const flushBatch = (zoneName: string) => {
+    const built = batcher.build(zoneName, { castShadow: true, receiveShadow: true });
+    built.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.computeBoundingSphere();
+        geometries.push(obj.geometry);
+      }
+    });
+    group.add(built);
+  };
+
   const addSolidBox = (
     id: string,
     tag: string,
@@ -1426,6 +1488,7 @@ export function buildWorldProps(
         addSolidBox(`canopy-col-${px}-${pz}`, 'pillar', 'metal', 0.65, 4.9, 0.65, px, 2.45, pz);
       }
     }
+    flushBatch('structures-plaza');
   }
 
   // -------------------------------------------------------------------------
@@ -1690,6 +1753,7 @@ export function buildWorldProps(
       batcher.add(concreteMat, buildJerseyBarrierGeometry(segLen - 0.06, 1.32, 1.02), sx, 0, -74.5, [0, Math.PI / 2, 0]);
     }
     addSolidBox('pg-north-wall', 'barrier', 'concrete', 156, 1.4, 1.1, 158, 0.7, -74.5);
+    flushBatch('structures-proving');
   }
 
   // -------------------------------------------------------------------------
@@ -1856,12 +1920,8 @@ export function buildWorldProps(
   addSignGantry('gantry-plaza-canyon', -58, 8, -Math.PI / 2, 15.0, textures.signs.canyonEntry, true);
   addSignGantry('gantry-highway-straight', -20, 260, Math.PI / 2, 21.5, textures.signs.highwayGantry, true);
 
-  // Merge all static architectural, proving-ground, barrier & gantry geometry into ~11 draw calls!
-  const batchedGroup = batcher.build('world-structures', { castShadow: true, receiveShadow: true });
-  batchedGroup.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) geometries.push(obj.geometry);
-  });
-  group.add(batchedGroup);
+  // Flush roadside buildings & highway gantries into their own frustum-cullable zone batch.
+  flushBatch('structures-roadside');
 
   // -------------------------------------------------------------------------
   // 5. INSTANCED HIGHWAY & CANYON INFRASTRUCTURE (Guardrails, Lamps, Chevrons, Cones)
@@ -1957,31 +2017,27 @@ export function buildWorldProps(
 
   if (railBeamMats.length > 0) {
     const beamGeo = trackGeo(buildWBeamGuardrailGeometry());
-    const beamInst = new THREE.InstancedMesh(beamGeo, guardrailBeamMat, railBeamMats.length);
-    beamInst.name = 'inst-guardrail-beams';
-    beamInst.castShadow = true;
-    beamInst.receiveShadow = true;
-    railBeamMats.forEach((m, i) => beamInst.setMatrixAt(i, m));
-    beamInst.instanceMatrix.needsUpdate = true;
-    beamInst.computeBoundingSphere();
-    group.add(beamInst);
+    addChunkedInstances(group, beamGeo, guardrailBeamMat, 'inst-guardrail-beams', railBeamMats, null, {
+      sectorSize: 320,
+      castShadow: true,
+      receiveShadow: true,
+    });
 
     const postGeo = trackGeo(buildGuardrailPostGeometry());
-    const postInst = new THREE.InstancedMesh(postGeo, vertexMetalMat, railPostMats.length);
-    postInst.name = 'inst-guardrail-posts';
-    postInst.castShadow = true;
-    railPostMats.forEach((m, i) => postInst.setMatrixAt(i, m));
-    postInst.instanceMatrix.needsUpdate = true;
-    postInst.computeBoundingSphere();
-    group.add(postInst);
+    addChunkedInstances(group, postGeo, vertexMetalMat, 'inst-guardrail-posts', railPostMats, null, {
+      sectorSize: 320,
+      castShadow: false,
+      receiveShadow: false,
+      maxDistance: 300,
+      cullList: cullableSectors,
+    });
 
     const reflGeo = trackGeo(new THREE.BoxGeometry(0.06, 0.13, 0.09));
-    const reflInst = new THREE.InstancedMesh(reflGeo, reflectorAmberMat, railReflMats.length);
-    reflInst.name = 'inst-guardrail-reflectors';
-    railReflMats.forEach((m, i) => reflInst.setMatrixAt(i, m));
-    reflInst.instanceMatrix.needsUpdate = true;
-    reflInst.computeBoundingSphere();
-    group.add(reflInst);
+    addChunkedInstances(group, reflGeo, reflectorAmberMat, 'inst-guardrail-reflectors', railReflMats, null, {
+      sectorSize: 2000,
+      castShadow: false,
+      receiveShadow: false,
+    });
   }
 
   // --- Canyon Pass Sharp-Turn Yellow/Black Chevron Signs & Roadside Delineator Posts ---
@@ -2070,39 +2126,34 @@ export function buildWorldProps(
   if (chevronSignMats.length > 0) {
     const chevBoardGeo = trackGeo(new THREE.PlaneGeometry(0.95, 1.15));
     chevBoardGeo.translate(0, 0, 0.015);
-    const chevInst = new THREE.InstancedMesh(chevBoardGeo, chevronSignMat, chevronSignMats.length);
-    chevInst.name = 'inst-chevron-signs';
-    chevInst.castShadow = true;
-    chevronSignMats.forEach((m, i) => chevInst.setMatrixAt(i, m));
-    chevInst.instanceMatrix.needsUpdate = true;
-    chevInst.computeBoundingSphere();
+    addChunkedInstances(group, chevBoardGeo, chevronSignMat, 'inst-chevron-signs', chevronSignMats, null, {
+      sectorSize: 2000,
+      castShadow: false,
+      receiveShadow: false,
+    });
 
-    // Galvanized U-channel post + aluminum sign backing plate merged together
     const postStem = new THREE.BoxGeometry(0.08, 2.35, 0.08);
     postStem.translate(0, 0.92, -0.055);
     const signBack = new THREE.BoxGeometry(0.97, 1.17, 0.025);
     signBack.translate(0, 1.78, -0.005);
     const chevPostGeo = trackGeo(mergeColoredParts([postStem, signBack]));
-    const chevPostInst = new THREE.InstancedMesh(chevPostGeo, steelGalvMat, chevronPostMats.length);
-    chevPostInst.name = 'inst-chevron-posts';
-    chevronPostMats.forEach((m, i) => chevPostInst.setMatrixAt(i, m));
-    chevPostInst.instanceMatrix.needsUpdate = true;
-    chevPostInst.computeBoundingSphere();
-
-    group.add(chevInst, chevPostInst);
+    addChunkedInstances(group, chevPostGeo, steelGalvMat, 'inst-chevron-posts', chevronPostMats, null, {
+      sectorSize: 2000,
+      castShadow: false,
+      receiveShadow: false,
+    });
   }
 
   if (delineatorMats.length > 0) {
     const delinGeo = trackGeo(buildDelineatorPostGeometry());
-    const delinInst = new THREE.InstancedMesh(delinGeo, vertexPolymerMat, delineatorMats.length);
-    delinInst.name = 'inst-delineator-posts';
-    delineatorMats.forEach((m, i) => delinInst.setMatrixAt(i, m));
-    delinInst.instanceMatrix.needsUpdate = true;
-    delinInst.computeBoundingSphere();
-    group.add(delinInst);
+    addChunkedInstances(group, delinGeo, vertexPolymerMat, 'inst-delineator-posts', delineatorMats, null, {
+      sectorSize: 2000,
+      castShadow: false,
+      receiveShadow: false,
+    });
   }
 
-  // --- Tapered Galvanized Cobra-Head Streetlamps (2 draw calls total!) ---
+  // --- Tapered Galvanized Cobra-Head Streetlamps (single draw call per part, zero shadow pass) ---
   const lampTransforms: { x: number; y: number; z: number; yaw: number }[] = [];
   for (let x = -280; x <= 280; x += 38) {
     if (Math.abs(x) < 16 || Math.abs(x - 160) < 16) continue;
@@ -2123,28 +2174,28 @@ export function buildWorldProps(
     trackGeo(lampGeos.structure);
     trackGeo(lampGeos.lens);
 
-    const lampInst = new THREE.InstancedMesh(lampGeos.structure, vertexMetalMat, lampTransforms.length);
-    const lensInst = new THREE.InstancedMesh(lampGeos.lens, lampGlowMat, lampTransforms.length);
-    lampInst.name = 'inst-lamp-structures';
-    lensInst.name = 'inst-lamp-lenses';
-    lampInst.castShadow = true;
-
-    lampTransforms.forEach((l, i) => {
+    const lampMats: THREE.Matrix4[] = [];
+    for (let i = 0; i < lampTransforms.length; i++) {
+      const l = lampTransforms[i];
       dummy.position.set(l.x, l.y, l.z);
       dummy.rotation.set(0, l.yaw, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      lampInst.setMatrixAt(i, dummy.matrix);
-      lensInst.setMatrixAt(i, dummy.matrix);
+      lampMats.push(dummy.matrix.clone());
+    }
+    addChunkedInstances(group, lampGeos.structure, vertexMetalMat, 'inst-lamp-structures', lampMats, null, {
+      sectorSize: 2000,
+      castShadow: false,
+      receiveShadow: false,
     });
-    lampInst.instanceMatrix.needsUpdate = true;
-    lensInst.instanceMatrix.needsUpdate = true;
-    lampInst.computeBoundingSphere();
-    lensInst.computeBoundingSphere();
-    group.add(lampInst, lensInst);
+    addChunkedInstances(group, lampGeos.lens, lampGlowMat, 'inst-lamp-lenses', lampMats, null, {
+      sectorSize: 2000,
+      castShadow: false,
+      receiveShadow: false,
+    });
   }
 
-  // --- Rubber-Base Reflective Traffic Cones (1 draw call!) ---
+  // --- Rubber-Base Reflective Traffic Cones (single draw call, no shadow pass, distance-culled) ---
   const conePositions: [number, number][] = [];
   for (let x = 96; x <= 212; x += 12) conePositions.push([x, 76.4], [x, 99.6]);
   for (let x = 96; x <= 186; x += 18) conePositions.push([x, 12.6], [x, 27.4]);
@@ -2152,19 +2203,22 @@ export function buildWorldProps(
 
   if (conePositions.length > 0) {
     const coneGeo = trackGeo(buildTrafficConeGeometry());
-    const coneInst = new THREE.InstancedMesh(coneGeo, vertexPolymerMat, conePositions.length);
-    coneInst.name = 'inst-traffic-cones';
-    coneInst.castShadow = true;
-    conePositions.forEach(([x, z], i) => {
+    const coneMats: THREE.Matrix4[] = [];
+    for (let i = 0; i < conePositions.length; i++) {
+      const [x, z] = conePositions[i];
       dummy.position.set(x, 0, z);
       dummy.rotation.set(0, (i * 0.7) % (Math.PI * 2), 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      coneInst.setMatrixAt(i, dummy.matrix);
+      coneMats.push(dummy.matrix.clone());
+    }
+    addChunkedInstances(group, coneGeo, vertexPolymerMat, 'inst-traffic-cones', coneMats, null, {
+      sectorSize: 2000,
+      castShadow: false,
+      receiveShadow: false,
+      maxDistance: 240,
+      cullList: cullableSectors,
     });
-    coneInst.instanceMatrix.needsUpdate = true;
-    coneInst.computeBoundingSphere();
-    group.add(coneInst);
   }
 
   // -------------------------------------------------------------------------
@@ -2473,143 +2527,136 @@ export function buildWorldProps(
     });
   }
 
-  // --- Instantiate Coastal Pines (2 draw calls total!) ---
+  // --- Instantiate Coastal Pines (spatially chunked for aggressive frustum & shadow culling!) ---
   if (pineList.length > 0) {
     const pineGeos = buildCoastalPineGeometries();
     trackGeo(pineGeos.trunk);
     trackGeo(pineGeos.canopy);
 
-    const trunkInst = new THREE.InstancedMesh(pineGeos.trunk, barkMat, pineList.length);
-    const canopyInst = new THREE.InstancedMesh(pineGeos.canopy, pineCanopyMat, pineList.length);
-    trunkInst.name = 'inst-pine-trunks';
-    canopyInst.name = 'inst-pine-canopy';
-    trunkInst.castShadow = true;
-    trunkInst.receiveShadow = true;
-    canopyInst.castShadow = true;
-    canopyInst.receiveShadow = true;
-
-    const white = new THREE.Color(0xffffff);
-    pineList.forEach((p, i) => {
+    const pineMats: THREE.Matrix4[] = [];
+    const pineColors: THREE.Color[] = [];
+    for (let i = 0; i < pineList.length; i++) {
+      const p = pineList[i];
       dummy.position.set(p.x, p.y, p.z);
       dummy.rotation.set(p.leanX, p.yaw, p.leanZ, 'YXZ');
       dummy.scale.set(p.sx, p.sy, p.sx);
       dummy.updateMatrix();
-      trunkInst.setMatrixAt(i, dummy.matrix);
-      trunkInst.setColorAt(i, white);
-      canopyInst.setMatrixAt(i, dummy.matrix);
-      canopyInst.setColorAt(i, p.color);
+      pineMats.push(dummy.matrix.clone());
+      pineColors.push(p.color);
+    }
+
+    addChunkedInstances(group, pineGeos.trunk, barkMat, 'inst-pine-trunks', pineMats, null, {
+      sectorSize: 320,
+      castShadow: true,
+      receiveShadow: true,
     });
-    trunkInst.instanceMatrix.needsUpdate = true;
-    if (trunkInst.instanceColor) trunkInst.instanceColor.needsUpdate = true;
-    canopyInst.instanceMatrix.needsUpdate = true;
-    if (canopyInst.instanceColor) canopyInst.instanceColor.needsUpdate = true;
-    trunkInst.computeBoundingSphere();
-    canopyInst.computeBoundingSphere();
-    group.add(trunkInst, canopyInst);
+    // Canopy keeps castShadow on 320m sectors (only nearby sectors enter the 60m shadow frustum),
+    // while receiveShadow=false eliminates 9-tap PCF lookups & self-shadow card acne on overdrawn needles!
+    addChunkedInstances(group, pineGeos.canopy, pineCanopyMat, 'inst-pine-canopy', pineMats, pineColors, {
+      sectorSize: 320,
+      castShadow: true,
+      receiveShadow: false,
+    });
   }
 
-  // --- Instantiate California Live Oaks (2 draw calls total!) ---
+  // --- Instantiate California Live Oaks (spatially chunked!) ---
   if (oakList.length > 0) {
     const oakGeos = buildCaliforniaOakGeometries();
     trackGeo(oakGeos.trunk);
     trackGeo(oakGeos.canopy);
 
-    const trunkInst = new THREE.InstancedMesh(oakGeos.trunk, barkMat, oakList.length);
-    const canopyInst = new THREE.InstancedMesh(oakGeos.canopy, oakCanopyMat, oakList.length);
-    trunkInst.name = 'inst-oak-trunks';
-    canopyInst.name = 'inst-oak-canopy';
-    trunkInst.castShadow = true;
-    trunkInst.receiveShadow = true;
-    canopyInst.castShadow = true;
-    canopyInst.receiveShadow = true;
-
-    const white = new THREE.Color(0xffffff);
-    oakList.forEach((o, i) => {
+    const oakMats: THREE.Matrix4[] = [];
+    const oakColors: THREE.Color[] = [];
+    for (let i = 0; i < oakList.length; i++) {
+      const o = oakList[i];
       dummy.position.set(o.x, o.y, o.z);
       dummy.rotation.set(o.leanX, o.yaw, o.leanZ, 'YXZ');
       dummy.scale.set(o.sx, o.sy, o.sx);
       dummy.updateMatrix();
-      trunkInst.setMatrixAt(i, dummy.matrix);
-      trunkInst.setColorAt(i, white);
-      canopyInst.setMatrixAt(i, dummy.matrix);
-      canopyInst.setColorAt(i, o.color);
+      oakMats.push(dummy.matrix.clone());
+      oakColors.push(o.color);
+    }
+
+    addChunkedInstances(group, oakGeos.trunk, barkMat, 'inst-oak-trunks', oakMats, null, {
+      sectorSize: 320,
+      castShadow: true,
+      receiveShadow: true,
     });
-    trunkInst.instanceMatrix.needsUpdate = true;
-    if (trunkInst.instanceColor) trunkInst.instanceColor.needsUpdate = true;
-    canopyInst.instanceMatrix.needsUpdate = true;
-    if (canopyInst.instanceColor) canopyInst.instanceColor.needsUpdate = true;
-    trunkInst.computeBoundingSphere();
-    canopyInst.computeBoundingSphere();
-    group.add(trunkInst, canopyInst);
+    addChunkedInstances(group, oakGeos.canopy, oakCanopyMat, 'inst-oak-canopy', oakMats, oakColors, {
+      sectorSize: 320,
+      castShadow: true,
+      receiveShadow: false,
+    });
   }
 
-  // --- Instantiate Wild Coastal Grass Tufts & Sagebrush Shrubs (2 draw calls total!) ---
+  // --- Instantiate Wild Coastal Grass Tufts & Sagebrush Shrubs (chunked + distance culled, zero shadows!) ---
   if (grassList.length > 0) {
     const grassGeo = trackGeo(buildGrassTuftGeometry());
-    const grassInst = new THREE.InstancedMesh(grassGeo, grassTuftMat, grassList.length);
-    grassInst.name = 'inst-grass-tufts';
-    grassInst.castShadow = false;
-    grassInst.receiveShadow = true;
-
-    grassList.forEach((g, i) => {
+    const grassMats: THREE.Matrix4[] = [];
+    const grassColors: THREE.Color[] = [];
+    for (let i = 0; i < grassList.length; i++) {
+      const g = grassList[i];
       dummy.position.set(g.x, g.y, g.z);
       dummy.rotation.set(0, g.yaw, 0);
       dummy.scale.set(g.sx, g.sy, g.sx);
       dummy.updateMatrix();
-      grassInst.setMatrixAt(i, dummy.matrix);
-      grassInst.setColorAt(i, g.color);
+      grassMats.push(dummy.matrix.clone());
+      grassColors.push(g.color);
+    }
+    addChunkedInstances(group, grassGeo, grassTuftMat, 'inst-grass-tufts', grassMats, grassColors, {
+      sectorSize: 280,
+      castShadow: false,
+      receiveShadow: false,
+      maxDistance: 210,
+      cullList: cullableSectors,
     });
-    grassInst.instanceMatrix.needsUpdate = true;
-    if (grassInst.instanceColor) grassInst.instanceColor.needsUpdate = true;
-    grassInst.computeBoundingSphere();
-    group.add(grassInst);
   }
 
   if (shrubList.length > 0) {
     const shrubGeo = trackGeo(buildChaparralShrubGeometry());
-    const shrubInst = new THREE.InstancedMesh(shrubGeo, oakCanopyMat, shrubList.length);
-    shrubInst.name = 'inst-chaparral-shrubs';
-    shrubInst.castShadow = true;
-    shrubInst.receiveShadow = true;
-
-    shrubList.forEach((s, i) => {
+    const shrubMats: THREE.Matrix4[] = [];
+    const shrubColors: THREE.Color[] = [];
+    for (let i = 0; i < shrubList.length; i++) {
+      const s = shrubList[i];
       dummy.position.set(s.x, s.y, s.z);
       dummy.rotation.set(0, s.yaw, 0);
       dummy.scale.set(s.sx, s.sy, s.sx);
       dummy.updateMatrix();
-      shrubInst.setMatrixAt(i, dummy.matrix);
-      shrubInst.setColorAt(i, s.color);
+      shrubMats.push(dummy.matrix.clone());
+      shrubColors.push(s.color);
+    }
+    addChunkedInstances(group, shrubGeo, oakCanopyMat, 'inst-chaparral-shrubs', shrubMats, shrubColors, {
+      sectorSize: 280,
+      castShadow: false,
+      receiveShadow: false,
+      maxDistance: 270,
+      cullList: cullableSectors,
     });
-    shrubInst.instanceMatrix.needsUpdate = true;
-    if (shrubInst.instanceColor) shrubInst.instanceColor.needsUpdate = true;
-    shrubInst.computeBoundingSphere();
-    group.add(shrubInst);
   }
 
-  // --- Instantiate Stratified Canyon Boulders (2 distinct sculpted rock archetypes = 2 draw calls!) ---
+  // --- Instantiate Stratified Canyon Boulders (spatially chunked!) ---
   const addBoulderSet = (list: readonly BoulderTransform[], name: string, seed: number, angularity: number) => {
     if (list.length === 0) return;
     const rockGeo = trackGeo(buildSculptedBoulderGeometry(seed, angularity));
-    const rockInst = new THREE.InstancedMesh(rockGeo, boulderMat, list.length);
-    rockInst.name = name;
-    rockInst.castShadow = true;
-    rockInst.receiveShadow = true;
-
-    list.forEach((b, i) => {
+    const rockMats: THREE.Matrix4[] = [];
+    const rockColors: THREE.Color[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
       dummy.position.set(b.x, b.y, b.z);
       dummy.rotation.set(b.rx, b.ry, b.rz);
       dummy.scale.set(b.sx, b.sy, b.sz);
       dummy.updateMatrix();
-      rockInst.setMatrixAt(i, dummy.matrix);
-      rockInst.setColorAt(i, b.color);
+      rockMats.push(dummy.matrix.clone());
+      rockColors.push(b.color);
+    }
+    addChunkedInstances(group, rockGeo, boulderMat, name, rockMats, rockColors, {
+      sectorSize: 320,
+      castShadow: true,
+      receiveShadow: true,
     });
-    rockInst.instanceMatrix.needsUpdate = true;
-    if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
-    rockInst.computeBoundingSphere();
-    group.add(rockInst);
   };
   addBoulderSet(boulderA, 'inst-boulders-crag', 6101, 0.52);
   addBoulderSet(boulderB, 'inst-boulders-granite', 6209, 0.32);
 
-  return { group, geometries, materials, colliders };
+  return { group, geometries, materials, colliders, cullableSectors };
 }

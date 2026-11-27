@@ -51,6 +51,7 @@ interface SkidPrev {
  * - Incandescent spark bursts on impact
  * - Tire skidmark ribbon pool on drifting / hard braking
  * - Engine smoke puffs when engineHealth < 0.6
+ * Automatically hides inactive pools so idle FX consume zero draw calls and zero CPU loop work.
  */
 export class WorldFX {
   readonly group = new THREE.Group();
@@ -58,6 +59,7 @@ export class WorldFX {
   // Crash sparks
   private readonly sparks: SparkParticle[] = [];
   private sparkCursor = 0;
+  private activeSparks = 0;
   private readonly sparkPos: Float32Array;
   private readonly sparkCol: Float32Array;
   private readonly sparkGeo: THREE.BufferGeometry;
@@ -67,6 +69,7 @@ export class WorldFX {
   // Engine smoke
   private readonly smokes: SmokeParticle[] = [];
   private smokeCursor = 0;
+  private activeSmokes = 0;
   private smokeEmitAccum = 0;
   private readonly smokePos: Float32Array;
   private readonly smokeCol: Float32Array;
@@ -78,6 +81,7 @@ export class WorldFX {
 
   // Skidmarks
   private skidCursor = 0;
+  private hasSkids = false;
   private readonly skidPositions: Float32Array;
   private readonly skidColors: Float32Array;
   private readonly skidGeo: THREE.BufferGeometry;
@@ -115,6 +119,7 @@ export class WorldFX {
     this.sparkPoints = new THREE.Points(this.sparkGeo, this.sparkMat);
     this.sparkPoints.name = 'fx-crash-sparks';
     this.sparkPoints.frustumCulled = false;
+    this.sparkPoints.visible = false;
     this.group.add(this.sparkPoints);
 
     // --- Engine Smoke (expanding & smoothly alpha-fading sprite puffs) ---
@@ -167,6 +172,7 @@ export class WorldFX {
     this.smokePoints = new THREE.Points(this.smokeGeo, this.smokeMat);
     this.smokePoints.name = 'fx-engine-smoke';
     this.smokePoints.frustumCulled = false;
+    this.smokePoints.visible = false;
     this.group.add(this.smokePoints);
 
     // --- Skidmarks (ring buffer of 2-triangle quads) ---
@@ -217,6 +223,7 @@ export class WorldFX {
     this.skidMesh.name = 'fx-skidmarks';
     this.skidMesh.renderOrder = 2;
     this.skidMesh.frustumCulled = false;
+    this.skidMesh.visible = false;
     this.group.add(this.skidMesh);
   }
 
@@ -240,6 +247,7 @@ export class WorldFX {
       const ry = Math.random() * 1.4;
       const rz = (Math.random() - 0.5) * 2;
 
+      if (!p.alive) this.activeSparks += 1;
       p.alive = true;
       p.age = 0;
       p.life = 0.28 + Math.random() * 0.42;
@@ -250,6 +258,7 @@ export class WorldFX {
       p.vy = (Math.max(0.25, ny) * 0.65 + ry) * spread * 0.75;
       p.vz = (nz * 0.75 + rz) * spread;
     }
+    this.sparkPoints.visible = this.activeSparks > 0;
   }
 
   /**
@@ -266,7 +275,6 @@ export class WorldFX {
     if (this.disposed) return;
 
     const halfW = width * 0.5;
-    // Left vector perpendicular to heading (heading=0 faces +Z, so left = (+cos, -sin)).
     const lx = Math.cos(headingRad) * halfW;
     const lz = -Math.sin(headingRad) * halfW;
     const y = worldPos.y + 0.03;
@@ -295,7 +303,6 @@ export class WorldFX {
     const pos = this.skidPositions;
     const col = this.skidColors;
 
-    // v0: prev left, v1: prev right, v2: curr left, v3: curr right
     pos[v0 * 3] = prev.x + prev.lx;
     pos[v0 * 3 + 1] = prev.y;
     pos[v0 * 3 + 2] = prev.z + prev.lz;
@@ -328,6 +335,11 @@ export class WorldFX {
     prev.lz = lz;
     prev.age = 0;
 
+    if (!this.hasSkids) {
+      this.hasSkids = true;
+      this.skidMesh.visible = true;
+    }
+
     (this.skidGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     (this.skidGeo.attributes.color as THREE.BufferAttribute).needsUpdate = true;
   }
@@ -337,7 +349,7 @@ export class WorldFX {
     if (this.disposed || engineHealth >= 0.6) return;
 
     const damageSeverity = clamp((0.6 - engineHealth) / 0.6, 0, 1);
-    const rate = 6 + damageSeverity * 18; // puffs per second
+    const rate = 6 + damageSeverity * 18;
     this.smokeEmitAccum += dt * rate;
 
     while (this.smokeEmitAccum >= 1) {
@@ -345,6 +357,7 @@ export class WorldFX {
       const p = this.smokes[this.smokeCursor];
       this.smokeCursor = (this.smokeCursor + 1) % MAX_SMOKE;
 
+      if (!p.alive) this.activeSmokes += 1;
       p.alive = true;
       p.age = 0;
       p.life = 1.0 + Math.random() * 0.9;
@@ -356,6 +369,7 @@ export class WorldFX {
       p.vz = (Math.random() - 0.5) * 0.9;
       p.darkness = 0.72 - damageSeverity * 0.5;
     }
+    this.smokePoints.visible = this.activeSmokes > 0;
   }
 
   /** Advances all active sparks, smoke puffs, and skid trail timeouts. */
@@ -363,93 +377,96 @@ export class WorldFX {
     if (this.disposed || dt <= 0) return;
     const step = Math.min(dt, 0.05);
 
-    // Age skid trail continuity trackers.
-    for (const prev of this.prevWheelSkid.values()) {
-      prev.age += step;
+    if (this.prevWheelSkid.size > 0) {
+      for (const prev of this.prevWheelSkid.values()) {
+        prev.age += step;
+      }
     }
 
-    // Update sparks.
-    let sparksDirty = false;
-    for (let i = 0; i < MAX_SPARKS; i++) {
-      const p = this.sparks[i];
-      if (!p.alive) continue;
-      sparksDirty = true;
-      p.age += step;
-      if (p.age >= p.life) {
-        p.alive = false;
-        this.sparkPos[i * 3 + 1] = -999;
-        this.sparkCol[i * 3] = 0;
-        this.sparkCol[i * 3 + 1] = 0;
-        this.sparkCol[i * 3 + 2] = 0;
-        continue;
+    if (this.activeSparks > 0) {
+      let aliveCount = 0;
+      for (let i = 0; i < MAX_SPARKS; i++) {
+        const p = this.sparks[i];
+        if (!p.alive) continue;
+        p.age += step;
+        if (p.age >= p.life) {
+          p.alive = false;
+          this.sparkPos[i * 3 + 1] = -999;
+          this.sparkCol[i * 3] = 0;
+          this.sparkCol[i * 3 + 1] = 0;
+          this.sparkCol[i * 3 + 2] = 0;
+          continue;
+        }
+        aliveCount += 1;
+
+        p.vy -= 18.0 * step;
+        const drag = Math.max(0, 1 - 1.6 * step);
+        p.vx *= drag;
+        p.vz *= drag;
+        p.x += p.vx * step;
+        p.y += p.vy * step;
+        p.z += p.vz * step;
+
+        const ground = this.sampleGroundY(p.x, p.z) + 0.04;
+        if (p.y < ground) {
+          p.y = ground;
+          p.vy = Math.abs(p.vy) * 0.42;
+          p.vx *= 0.72;
+          p.vz *= 0.72;
+        }
+
+        const fade = 1 - p.age / p.life;
+        this.sparkPos[i * 3] = p.x;
+        this.sparkPos[i * 3 + 1] = p.y;
+        this.sparkPos[i * 3 + 2] = p.z;
+        this.sparkCol[i * 3] = 1.0 * fade;
+        this.sparkCol[i * 3 + 1] = (0.55 + 0.45 * fade) * fade;
+        this.sparkCol[i * 3 + 2] = 0.25 * fade * fade;
       }
 
-      p.vy -= 18.0 * step;
-      const drag = Math.max(0, 1 - 1.6 * step);
-      p.vx *= drag;
-      p.vz *= drag;
-      p.x += p.vx * step;
-      p.y += p.vy * step;
-      p.z += p.vz * step;
-
-      const ground = this.sampleGroundY(p.x, p.z) + 0.04;
-      if (p.y < ground) {
-        p.y = ground;
-        p.vy = Math.abs(p.vy) * 0.42;
-        p.vx *= 0.72;
-        p.vz *= 0.72;
-      }
-
-      const fade = 1 - p.age / p.life;
-      this.sparkPos[i * 3] = p.x;
-      this.sparkPos[i * 3 + 1] = p.y;
-      this.sparkPos[i * 3 + 2] = p.z;
-      this.sparkCol[i * 3] = 1.0 * fade;
-      this.sparkCol[i * 3 + 1] = (0.55 + 0.45 * fade) * fade;
-      this.sparkCol[i * 3 + 2] = 0.25 * fade * fade;
-    }
-
-    if (sparksDirty) {
+      this.activeSparks = aliveCount;
+      this.sparkPoints.visible = aliveCount > 0;
       (this.sparkGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
       (this.sparkGeo.attributes.color as THREE.BufferAttribute).needsUpdate = true;
     }
 
-    // Update engine smoke.
-    let smokeDirty = false;
-    for (let i = 0; i < MAX_SMOKE; i++) {
-      const p = this.smokes[i];
-      if (!p.alive) continue;
-      smokeDirty = true;
-      p.age += step;
-      if (p.age >= p.life) {
-        p.alive = false;
-        this.smokePos[i * 3 + 1] = -999;
-        this.smokeAlpha[i] = 0;
-        this.smokeSize[i] = 0;
-        continue;
+    if (this.activeSmokes > 0) {
+      let aliveCount = 0;
+      for (let i = 0; i < MAX_SMOKE; i++) {
+        const p = this.smokes[i];
+        if (!p.alive) continue;
+        p.age += step;
+        if (p.age >= p.life) {
+          p.alive = false;
+          this.smokePos[i * 3 + 1] = -999;
+          this.smokeAlpha[i] = 0;
+          this.smokeSize[i] = 0;
+          continue;
+        }
+        aliveCount += 1;
+
+        p.x += p.vx * step;
+        p.y += p.vy * step;
+        p.z += p.vz * step;
+        p.vx *= 1 - 1.2 * step;
+        p.vz *= 1 - 1.2 * step;
+        p.vy *= 1 - 0.5 * step;
+
+        const t = p.age / p.life;
+        const alpha = Math.sin(t * Math.PI) * 0.62 * (1 - t * 0.35);
+        const shade = p.darkness;
+        this.smokePos[i * 3] = p.x;
+        this.smokePos[i * 3 + 1] = p.y;
+        this.smokePos[i * 3 + 2] = p.z;
+        this.smokeCol[i * 3] = shade;
+        this.smokeCol[i * 3 + 1] = shade;
+        this.smokeCol[i * 3 + 2] = shade * 1.04;
+        this.smokeSize[i] = 0.55 + t * 2.1;
+        this.smokeAlpha[i] = alpha;
       }
 
-      p.x += p.vx * step;
-      p.y += p.vy * step;
-      p.z += p.vz * step;
-      p.vx *= 1 - 1.2 * step;
-      p.vz *= 1 - 1.2 * step;
-      p.vy *= 1 - 0.5 * step;
-
-      const t = p.age / p.life;
-      const alpha = Math.sin(t * Math.PI) * 0.62 * (1 - t * 0.35);
-      const shade = p.darkness;
-      this.smokePos[i * 3] = p.x;
-      this.smokePos[i * 3 + 1] = p.y;
-      this.smokePos[i * 3 + 2] = p.z;
-      this.smokeCol[i * 3] = shade;
-      this.smokeCol[i * 3 + 1] = shade;
-      this.smokeCol[i * 3 + 2] = shade * 1.04;
-      this.smokeSize[i] = 0.55 + t * 2.1;
-      this.smokeAlpha[i] = alpha;
-    }
-
-    if (smokeDirty) {
+      this.activeSmokes = aliveCount;
+      this.smokePoints.visible = aliveCount > 0;
       (this.smokeGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
       (this.smokeGeo.attributes.color as THREE.BufferAttribute).needsUpdate = true;
       (this.smokeGeo.attributes.aSize as THREE.BufferAttribute).needsUpdate = true;
@@ -460,6 +477,14 @@ export class WorldFX {
   /** Clears transient trails and particles (e.g. on car warp or repair). */
   clear(): void {
     this.prevWheelSkid.clear();
+    this.activeSparks = 0;
+    this.activeSmokes = 0;
+    this.hasSkids = false;
+    this.skidCursor = 0;
+    this.sparkPoints.visible = false;
+    this.smokePoints.visible = false;
+    this.skidMesh.visible = false;
+
     for (let i = 0; i < MAX_SPARKS; i++) {
       this.sparks[i].alive = false;
       this.sparkPos[i * 3 + 1] = -999;
@@ -469,9 +494,13 @@ export class WorldFX {
       this.smokePos[i * 3 + 1] = -999;
       this.smokeAlpha[i] = 0;
     }
+    for (let q = 0; q < MAX_SKID_QUADS; q++) {
+      skidPositionsInit(this.skidPositions, q * 4);
+    }
     (this.sparkGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     (this.smokeGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     (this.smokeGeo.attributes.aAlpha as THREE.BufferAttribute).needsUpdate = true;
+    (this.skidGeo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
   }
 
   dispose(): void {

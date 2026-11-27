@@ -10,7 +10,13 @@ export type DrivetrainType = 'rwd' | 'awd' | 'fwd';
 
 export type TransmissionMode = 'auto' | 'manual';
 
-export type WorldSurfaceType = 'asphalt' | 'concrete' | 'dirt' | 'grass' | 'metal' | 'wood';
+export type WorldSurfaceType = 'asphalt' | 'concrete' | 'gravel' | 'dirt' | 'grass' | 'metal' | 'wood';
+
+/** Normalized road/ground surface category consumed by the procedural audio engine. */
+export type AudioSurfaceType = 'asphalt' | 'concrete' | 'gravel' | 'grass';
+
+/** Edge-triggered gear shift event for audio & HUD transients. */
+export type ShiftDirection = 'up' | 'down' | null;
 
 export interface VehicleControlInput {
   /** Throttle pedal 0..1. */
@@ -23,6 +29,40 @@ export interface VehicleControlInput {
   handbrake: boolean;
   /** Optional sequential gear shift request for this step (-1 down, 0 none, +1 up). */
   shift?: -1 | 0 | 1;
+  /** Optional automotive horn active while held. */
+  horn?: boolean;
+}
+
+/** Audio- & HUD-ready continuous vehicle driving telemetry. */
+export interface DriveTelemetry {
+  speedKmh: number;
+  speedMph: number;
+  forwardSpeedMs: number;
+  rpm: number;
+  idleRpm: number;
+  redlineRpm: number;
+  gear: number;
+  gearLabel: string;
+  throttle: number;
+  brake: number;
+  steer: number;
+  handbrake: boolean;
+  /** Turbocharger spool estimate in [0, 1]. */
+  turboBoost: number;
+  /** Peak lateral/longitudinal tire slip ratio in [0, 1] across grounded wheels. */
+  slipRatio: number;
+  /** Average suspension load/compression in [0, 1] across grounded wheels. */
+  wheelLoad: number;
+  /** Dominant road/terrain surface under the tires. */
+  surface: AudioSurfaceType;
+  /** True when all 4 wheels are off the ground. */
+  airborne: boolean;
+  /** Edge-triggered gear shift direction on the step a shift occurs, else null. */
+  shiftEvent: ShiftDirection;
+  /** Continuous sliding scrape contact intensity in [0, 1] against walls/guardrails/ground. */
+  scrapeIntensity: number;
+  /** True while the automotive horn is held. */
+  horn: boolean;
 }
 
 export interface VehicleTelemetry {
@@ -253,12 +293,18 @@ export interface VehiclePhysicsState {
   headingRad: number;
   /** Current engine RPM. */
   rpm: number;
+  /** Engine idle RPM. */
+  idleRpm: number;
+  /** Engine redline RPM (alias of `maxRpm` for audio telemetry). */
+  redlineRpm: number;
   /** Engine redline RPM. */
   maxRpm: number;
   /** Current gear: -1 = Reverse, 0 = Neutral, 1..N = Forward. */
   gear: number;
   /** Display gear label ('R', 'N', '1'..'6'). */
   gearLabel: string;
+  /** Edge-triggered gear shift direction on the step a shift occurs, else null. */
+  shiftEvent: ShiftDirection;
   /** Current transmission mode. */
   transmission: TransmissionMode;
   /** Effective applied throttle (0..1). */
@@ -269,6 +315,18 @@ export interface VehiclePhysicsState {
   steer: number;
   /** Handbrake state. */
   handbrake: boolean;
+  /** Turbocharger boost spool estimate in [0, 1]. */
+  turboBoost: number;
+  /** Peak lateral/longitudinal tire slip ratio in [0, 1] across grounded wheels. */
+  slipRatio: number;
+  /** Average suspension load/compression in [0, 1] across grounded wheels. */
+  wheelLoad: number;
+  /** Dominant road/terrain surface under the tires. */
+  surface: AudioSurfaceType;
+  /** Continuous sliding wall/guardrail/ground scrape contact intensity in [0, 1]. */
+  scrapeIntensity: number;
+  /** True while the automotive horn is held. */
+  horn: boolean;
   /** True when all 4 wheels are off the ground. */
   airborne: boolean;
   /** Count of wheels currently touching ground (0..4). */
@@ -295,9 +353,31 @@ export interface PhysicsStepResult {
   impacts: PhysicsImpactRecord[];
 }
 
+export interface PhysicsAdvanceResult {
+  /** Latest physics state after the final fixed substep. */
+  state: VehiclePhysicsState;
+  /** Smoothly interpolated visual pose between previous and current fixed substeps. */
+  interpolatedState: VehiclePhysicsState;
+  /** Substep interpolation factor in [0, 1]. */
+  alpha: number;
+  /** Number of fixed substeps executed this frame (bounded to prevent spiral of death). */
+  substeps: number;
+  /** All crash impact records emitted across substeps this frame. */
+  impacts: PhysicsImpactRecord[];
+  /** Aggregated shift event across substeps ('up' | 'down' | null). */
+  shiftEvent: ShiftDirection;
+}
+
 export interface DrivingWorldSimLike {
   step(dtSeconds: number, input: VehicleControlInput): PhysicsStepResult;
+  advance(
+    frameDtSeconds: number,
+    input: VehicleControlInput,
+    fixedDt?: number,
+    maxSubsteps?: number,
+  ): PhysicsAdvanceResult;
   getState(): VehiclePhysicsState;
+  getInterpolatedState(alpha: number): VehiclePhysicsState;
   setMechanicalHealth(health: MechanicalHealth): void;
   setTransmissionMode(mode: TransmissionMode): void;
   resetPose(position: Vec3, headingRad: number): VehiclePhysicsState;

@@ -8,15 +8,16 @@ import {
   type DriveInputFrame,
   type VehiclePhysicsState,
 } from '@blend-garage/world-racing';
+import type { SoundEngine } from './audio';
 import { clamp, damp, lerp } from './math';
 import type { DriveCameraView, DriveSnapshot } from './types';
-import type { VehicleRig } from './vehicle/VehicleRig';
+import type { VehicleRig, WheelDriveState } from './vehicle/VehicleRig';
 import { OpenWorld, type SpawnName, type WorldSkidInput } from './world';
 
 const FIXED_DT = 1 / 60;
-const MAX_SUBSTEPS = 4;
+const MAX_SUBSTEPS = 3;
 const CAMERA_ORDER: DriveCameraView[] = ['chase', 'chase-far', 'hood', 'bumper', 'orbit'];
-const SNAPSHOT_INTERVAL = 1 / 30;
+const SNAPSHOT_INTERVAL = 1 / 20;
 
 export interface DriveSessionOptions {
   scene: THREE.Scene;
@@ -24,6 +25,7 @@ export interface DriveSessionOptions {
   canvas: HTMLCanvasElement;
   rig: VehicleRig;
   build: CarBuild;
+  sound: SoundEngine;
   width: number;
   height: number;
   onExit: () => void;
@@ -47,8 +49,8 @@ function isSpawnName(name: string | undefined): name is SpawnName {
 
 /**
  * Pure TypeScript Open-World driving session: owns the outdoor OpenWorld, Rapier vehicle physics,
- * real-time crash deformation simulator, keyboard/gamepad input controller, and dynamic chase cameras.
- * Zero React imports.
+ * real-time crash deformation simulator, keyboard/gamepad input controller, procedural SoundEngine
+ * telemetry feed, and smooth interpolated chase cameras. Zero React imports.
  */
 export class DriveSession {
   readonly camera: THREE.PerspectiveCamera;
@@ -58,6 +60,7 @@ export class DriveSession {
   private readonly damageSim: RealDamageSimulator;
   private readonly input: DriveInputController;
   private readonly rig: VehicleRig;
+  private readonly sound: SoundEngine;
   private readonly canvas: HTMLCanvasElement;
   private readonly onExit: () => void;
   private readonly onNotify: (text: string) => void;
@@ -71,12 +74,22 @@ export class DriveSession {
   private gamepadName: string | null = null;
   private lastImpactG = 0;
   private totalImpacts = 0;
+  private detachedPartsCount = 0;
 
   private accumulator = 0;
   private elapsed = 0;
   private snapshotTimer = 0;
   private snapshotDirty = true;
   private disposed = false;
+
+  // Pre-allocated per-frame wheel & skid buffers to avoid GC pressure.
+  private readonly wheelStatesBuf: WheelDriveState[] = [
+    { corner: 'FL', suspensionY: 0, steerRad: 0, spinRad: 0, wobbleRad: 0 },
+    { corner: 'FR', suspensionY: 0, steerRad: 0, spinRad: 0, wobbleRad: 0 },
+    { corner: 'RL', suspensionY: 0, steerRad: 0, spinRad: 0, wobbleRad: 0 },
+    { corner: 'RR', suspensionY: 0, steerRad: 0, spinRad: 0, wobbleRad: 0 },
+  ];
+  private readonly skidMarksBuf: WorldSkidInput[] = [];
 
   // Smooth chase & orbit camera state
   private readonly camPos = new THREE.Vector3();
@@ -98,6 +111,7 @@ export class DriveSession {
     initialState: VehiclePhysicsState,
   ) {
     this.rig = options.rig;
+    this.sound = options.sound;
     this.canvas = options.canvas;
     this.onExit = options.onExit;
     this.onNotify = options.onNotify;
@@ -111,9 +125,14 @@ export class DriveSession {
     this.camera = new THREE.PerspectiveCamera(56, Math.max(1, options.width) / Math.max(1, options.height), 0.15, 1600);
     this.orbitDistance = clamp(this.rig.size.z * 1.45, 5.2, 8.5);
 
+    this.rig.setDriveShadowMode(true);
     this.rig.setDriveLights(this.lightsOn);
     this.syncRigFromState(initialState);
     this.snapCameraToState(initialState);
+
+    this.sound.setCarProfile({ id: this.rig.manifest.id, name: this.rig.manifest.name });
+    this.sound.setMode('drive');
+    this.sound.playIgnition();
 
     this.canvas.addEventListener('pointerdown', this.handlePointerDown);
     this.canvas.addEventListener('pointermove', this.handlePointerMove);
@@ -177,12 +196,14 @@ export class DriveSession {
     this.cameraView = CAMERA_ORDER[(idx + 1) % CAMERA_ORDER.length];
     this.camInitialized = false;
     this.snapshotDirty = true;
+    this.sound.playCameraSwoosh();
   }
 
   toggleLights(): void {
     this.lightsOn = !this.lightsOn;
     this.rig.setDriveLights(this.lightsOn);
     this.snapshotDirty = true;
+    this.sound.playLightSwitch();
   }
 
   repairCar(): void {
@@ -193,8 +214,10 @@ export class DriveSession {
     this.sim.setMechanicalHealth(result.health);
     this.lastImpactG = 0;
     this.totalImpacts = 0;
+    this.detachedPartsCount = 0;
     this.cameraShake = 0;
     this.world.clearFx();
+    this.sound.playRepair();
     this.snapshotDirty = true;
   }
 
@@ -210,11 +233,13 @@ export class DriveSession {
     this.world.clearFx();
     this.syncRigFromState(this.state);
     this.snapCameraToState(this.state);
+    this.sound.playReset();
     this.snapshotDirty = true;
   }
 
   /**
-   * Advances physics, crash deformation, car rig, world FX, and driving camera for one frame.
+   * Advances physics, crash deformation, car rig (with smooth fixed-step pose interpolation),
+   * world FX, procedural audio, and driving camera for one frame.
    * Returns a fresh `DriveSnapshot` when HUD state should refresh, or `null` to skip React re-renders.
    */
   update(dt: number): DriveSnapshot | null {
@@ -250,16 +275,19 @@ export class DriveSession {
     if (frame.actions.toggleTransmission) {
       const next = this.state.transmission === 'auto' ? 'manual' : 'auto';
       this.sim.setTransmissionMode(next);
+      this.sound.playUiClick();
       this.onNotify(`Transmission: ${next === 'manual' ? 'Manual (Q/E or LB/RB)' : 'Automatic'}.`);
     }
 
     const prevGear = this.state.gear;
     const prevHandbrake = this.state.handbrake;
+    const prevHorn = this.state.horn;
 
     // Fixed-timestep physics & damage loop
     this.accumulator = Math.min(this.accumulator + clampedDt, FIXED_DT * MAX_SUBSTEPS);
     let substeps = 0;
     let shiftPending = frame.control.shift ?? 0;
+    let shiftEvent: 'up' | 'down' | null = null;
 
     while (this.accumulator >= FIXED_DT && substeps < MAX_SUBSTEPS) {
       const stepInput = shiftPending !== 0 ? { ...frame.control, shift: shiftPending } : { ...frame.control, shift: 0 as const };
@@ -267,6 +295,7 @@ export class DriveSession {
 
       const stepResult = this.sim.step(FIXED_DT, stepInput);
       this.state = stepResult.state;
+      if (stepResult.state.shiftEvent) shiftEvent = stepResult.state.shiftEvent;
       this.damageSim.step(FIXED_DT);
 
       if (stepResult.impacts.length > 0) {
@@ -275,6 +304,19 @@ export class DriveSession {
           this.rig.applyDamageResult(dmg);
           this.health = dmg.health;
           this.sim.setMechanicalHealth(dmg.health);
+
+          const newlyDetached =
+            (dmg.detachedImpulses !== undefined && dmg.detachedImpulses.length > 0) ||
+            dmg.detachedPartIds.length > this.detachedPartsCount;
+          this.detachedPartsCount = dmg.detachedPartIds.length;
+
+          this.sound.playImpact({
+            gForce: impact.gForce,
+            speedMps: impact.event.relativeSpeed,
+            glassBreak: impact.gForce >= 18,
+            panelDetached: newlyDetached,
+          });
+          if (newlyDetached) this.sound.playPartDetach();
 
           const sparkIntensity = clamp(impact.gForce / 14, 0.4, 2.2);
           this.world.emitCrashSparks(impact.worldPoint, impact.worldNormal, sparkIntensity);
@@ -291,47 +333,80 @@ export class DriveSession {
       substeps += 1;
     }
 
-    if (this.state.gear !== prevGear || this.state.handbrake !== prevHandbrake) {
+    if (shiftEvent) {
+      this.sound.playShift(shiftEvent, this.state.rpm);
+    }
+
+    // Feed live telemetry to procedural SoundEngine (engine, turbo/BOV, tires, surface, wind, horn, scrape).
+    this.sound.updateDrive({
+      dt: clampedDt,
+      speedMps: Math.abs(this.state.forwardSpeedMs),
+      rpm: this.state.rpm,
+      idleRpm: this.state.idleRpm,
+      redlineRpm: this.state.redlineRpm,
+      gear: this.state.gear,
+      throttle: this.state.throttle,
+      brake: this.state.brake,
+      handbrake: this.state.handbrake,
+      turboBoost: this.state.turboBoost,
+      slipRatio: this.state.slipRatio,
+      wheelLoad: this.state.wheelLoad,
+      surface: this.state.surface,
+      cameraMode: this.cameraView,
+      airborne: this.state.airborne,
+      hornActive: this.state.horn,
+      scrapeIntensity: this.state.scrapeIntensity,
+      engineHealth: this.health.engineHealth,
+    });
+
+    if (this.state.gear !== prevGear || this.state.handbrake !== prevHandbrake || this.state.horn !== prevHorn) {
       this.snapshotDirty = true;
     }
 
-    this.syncRigFromState(this.state);
+    // Interpolate visual car pose & wheels between previous and current physics ticks for jitter-free motion.
+    const alpha = clamp(this.accumulator / FIXED_DT, 0, 1);
+    const renderState = this.sim.getInterpolatedState(alpha);
+
+    this.syncRigFromState(renderState);
     this.rig.update(clampedDt);
 
     // Update OpenWorld sun shadows, engine smoke, and tire skidmarks.
-    _carPos.set(this.state.position[0], this.state.position[1], this.state.position[2]);
-    _carQuat.set(this.state.quaternion[0], this.state.quaternion[1], this.state.quaternion[2], this.state.quaternion[3]);
+    _carPos.set(renderState.position[0], renderState.position[1], renderState.position[2]);
+    _carQuat.set(renderState.quaternion[0], renderState.quaternion[1], renderState.quaternion[2], renderState.quaternion[3]);
 
     _hoodLocal.set(0, this.rig.size.y * 0.56, this.rig.size.z * 0.34);
     _hoodWorld.copy(_hoodLocal).applyQuaternion(_carQuat).add(_carPos);
 
-    const skidMarks: WorldSkidInput[] = [];
+    this.skidMarksBuf.length = 0;
     const speedMs = Math.abs(this.state.forwardSpeedMs);
-    for (const w of this.state.wheels) {
-      if (!w.inContact || !w.contactPoint) continue;
-      const slipping = w.slipRatio > 0.34 || (this.state.handbrake && speedMs > 3.5 && (w.corner === 'RL' || w.corner === 'RR'));
-      if (slipping && speedMs > 1.8) {
-        skidMarks.push({
-          wheelKey: w.corner,
-          contactPoint: w.contactPoint,
-          headingRad: this.state.headingRad,
-          width: 0.28,
-          opacity: clamp(Math.max(w.slipRatio, this.state.handbrake ? 0.72 : 0.45), 0.25, 0.8),
-        });
+    if (speedMs > 1.8) {
+      for (let i = 0; i < this.state.wheels.length; i++) {
+        const w = this.state.wheels[i];
+        if (!w.inContact || !w.contactPoint) continue;
+        const slipping = w.slipRatio > 0.34 || (this.state.handbrake && speedMs > 3.5 && (w.corner === 'RL' || w.corner === 'RR'));
+        if (slipping) {
+          this.skidMarksBuf.push({
+            wheelKey: w.corner,
+            contactPoint: w.contactPoint,
+            headingRad: renderState.headingRad,
+            width: 0.28,
+            opacity: clamp(Math.max(w.slipRatio, this.state.handbrake ? 0.72 : 0.45), 0.25, 0.8),
+          });
+        }
       }
     }
 
     this.world.update(
       clampedDt,
-      { position: this.state.position, headingRad: this.state.headingRad },
+      { position: renderState.position, headingRad: renderState.headingRad },
       {
         hoodWorldPos: [_hoodWorld.x, _hoodWorld.y, _hoodWorld.z],
         engineHealth: this.health.engineHealth,
-        skidMarks: skidMarks.length > 0 ? skidMarks : undefined,
+        skidMarks: this.skidMarksBuf.length > 0 ? this.skidMarksBuf : undefined,
       },
     );
 
-    this.updateCamera(clampedDt);
+    this.updateCamera(clampedDt, renderState);
 
     this.snapshotTimer += clampedDt;
     if (this.snapshotDirty || this.snapshotTimer >= SNAPSHOT_INTERVAL) {
@@ -354,6 +429,7 @@ export class DriveSession {
     this.canvas.removeEventListener('pointerup', this.handlePointerUp);
     this.canvas.removeEventListener('pointercancel', this.handlePointerUp);
     this.canvas.removeEventListener('wheel', this.handleWheel);
+    this.rig.setDriveShadowMode(false);
     this.input.dispose();
     this.damageSim.dispose();
     this.sim.dispose();
@@ -364,25 +440,26 @@ export class DriveSession {
 
   private syncRigFromState(state: VehiclePhysicsState): void {
     this.rig.setDrivePose(state.position, state.quaternion);
-    this.rig.setWheelDriveState(
-      state.wheels.map((w) => ({
-        corner: w.corner,
-        suspensionY: w.suspensionOffset,
-        steerRad: w.steerAngleRad,
-        spinRad: w.spinAngleRad,
-        wobbleRad: w.wobbleRad,
-      })),
-    );
+    const wheels = state.wheels;
+    for (let i = 0; i < 4; i++) {
+      const src = wheels[i];
+      const dst = this.wheelStatesBuf[i];
+      dst.corner = src.corner;
+      dst.suspensionY = src.suspensionOffset;
+      dst.steerRad = src.steerAngleRad;
+      dst.spinRad = src.spinAngleRad;
+      dst.wobbleRad = src.wobbleRad;
+    }
+    this.rig.setWheelDriveState(this.wheelStatesBuf);
   }
 
   private snapCameraToState(state: VehiclePhysicsState): void {
     this.camInitialized = false;
     this.state = state;
-    this.updateCamera(0.016);
+    this.updateCamera(0.016, state);
   }
 
-  private updateCamera(dt: number): void {
-    const { state } = this;
+  private updateCamera(dt: number, state: VehiclePhysicsState): void {
     _carPos.set(state.position[0], state.position[1], state.position[2]);
     _carQuat.set(state.quaternion[0], state.quaternion[1], state.quaternion[2], state.quaternion[3]);
 
@@ -516,6 +593,8 @@ export class DriveSession {
       totalImpacts: this.totalImpacts,
       spawnName: this.spawnName,
       lightsOn: this.lightsOn,
+      turboBoost: this.state.turboBoost,
+      hornActive: this.state.horn,
     };
   }
 

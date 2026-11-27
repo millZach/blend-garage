@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Volume2, VolumeX, X } from 'lucide-react';
 import { GarageEngine } from './engine/GarageEngine';
 import { BlendGuide } from './ui/BlendGuide';
 import { DriveScreen } from './ui/DriveScreen';
@@ -41,6 +41,59 @@ function Curtain() {
   return <div aria-hidden className="pointer-events-none absolute inset-0 z-20 bg-black" style={{ opacity: curtain }} />;
 }
 
+/** Compact mute + volume pill for Selector and Shop screens (DriveScreen has its own inline button). */
+function AudioControl() {
+  const engine = useEngine();
+  const screen = useGarage((s) => s.screen);
+  const audio = useGarage((s) => s.audio);
+  const [open, setOpen] = useState(false);
+
+  if (screen === 'drive') return null;
+
+  const posStyle = screen === 'shop' ? { right: CHEST_WIDTH + 20, top: 20 } : { right: 32, top: 24 };
+
+  return (
+    <div
+      className="pointer-events-auto absolute z-10 flex items-center gap-2 rounded-md border border-white/10 bg-steel-900/90 px-2 py-1.5 text-xs text-alu-200 shadow-[0_8px_20px_rgb(0_0_0/0.4)]"
+      style={posStyle}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        aria-label={audio.muted ? 'Unmute audio' : 'Mute audio'}
+        aria-pressed={audio.muted}
+        onClick={() => engine.toggleMute()}
+        className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+          audio.muted ? 'text-chest-400 hover:bg-white/10' : 'text-lift-500 hover:bg-white/10'
+        }`}
+      >
+        {audio.muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+      </button>
+      {open ? (
+        <label className="flex items-center gap-2 pr-1">
+          <span className="sr-only">Master volume</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.02}
+            value={audio.muted ? 0 : audio.volume}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (audio.muted && v > 0) engine.toggleMute();
+              engine.setMasterVolume(v);
+            }}
+            className="slider w-20"
+            style={{ ['--fill' as string]: `${Math.round((audio.muted ? 0 : audio.volume) * 100)}%` }}
+          />
+          <span className="tabular w-7 text-right text-[11px] font-semibold text-alu-300">{Math.round((audio.muted ? 0 : audio.volume) * 100)}%</span>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
 function Hud() {
   const engine = useEngine();
   const screen = useGarage((s) => s.screen);
@@ -62,6 +115,7 @@ function Hud() {
   return (
     <>
       {screen === 'selector' ? <SelectorScreen onOpenGuide={openGuide} /> : screen === 'shop' ? <ShopScreen onOpenGuide={openGuide} /> : <DriveScreen />}
+      <AudioControl />
       <Curtain />
       <Notice />
       {guideOpen ? <BlendGuide onClose={closeGuide} /> : null}

@@ -2,10 +2,13 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import type { ImpactEvent, MechanicalHealth } from '@blend-garage/damage-bridge';
 import type { Vec3 } from '@blend-garage/vehicle-core';
 import type {
+  AudioSurfaceType,
   DrivingWorldSimLike,
+  PhysicsAdvanceResult,
   PhysicsImpactRecord,
   PhysicsStepResult,
   Quat,
+  ShiftDirection,
   TransmissionMode,
   VehicleControlInput,
   VehiclePhysicsConfig,
@@ -26,9 +29,66 @@ const SURFACE_GRIP_MULT: Record<WorldSurfaceType, number> = {
   concrete: 0.96,
   metal: 0.80,
   wood: 0.78,
+  gravel: 0.74,
   dirt: 0.72,
   grass: 0.62,
 };
+
+function toAudioSurface(surface: WorldSurfaceType): AudioSurfaceType {
+  switch (surface) {
+    case 'grass':
+      return 'grass';
+    case 'gravel':
+    case 'dirt':
+      return 'gravel';
+    case 'concrete':
+    case 'metal':
+    case 'wood':
+      return 'concrete';
+    default:
+      return 'asphalt';
+  }
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function lerpVec3(a: Vec3, b: Vec3, t: number): Vec3 {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+}
+
+function slerpQuat(a: Quat, b: Quat, t: number): Quat {
+  let bx = b[0];
+  let by = b[1];
+  let bz = b[2];
+  let bw = b[3];
+  let dot = a[0] * bx + a[1] * by + a[2] * bz + a[3] * bw;
+  if (dot < 0) {
+    dot = -dot;
+    bx = -bx;
+    by = -by;
+    bz = -bz;
+    bw = -bw;
+  }
+  let s0: number;
+  let s1: number;
+  if (dot > 0.9995) {
+    s0 = 1 - t;
+    s1 = t;
+  } else {
+    const theta = Math.acos(Math.min(1, dot));
+    const invSin = 1 / Math.sin(theta);
+    s0 = Math.sin((1 - t) * theta) * invSin;
+    s1 = Math.sin(t * theta) * invSin;
+  }
+  const rx = s0 * a[0] + s1 * bx;
+  const ry = s0 * a[1] + s1 * by;
+  const rz = s0 * a[2] + s1 * bz;
+  const rw = s0 * a[3] + s1 * bw;
+  const invLen = 1 / (Math.hypot(rx, ry, rz, rw) || 1);
+  return [rx * invLen, ry * invLen, rz * invLen, rw * invLen];
+}
 
 const DRIVABLE_TAGS = new Set(['road', 'terrain', 'ramp', 'ground', 'floor', 'plaza', 'apron']);
 
@@ -129,6 +189,50 @@ interface WheelRuntime {
   steerAngleRad: number;
   slipRatio: number;
   wobbleRad: number;
+  cachedSurface: WorldSurfaceType;
+}
+
+interface WheelPoseSnapshot {
+  suspensionOffset: number;
+  steerAngleRad: number;
+  spinAngleRad: number;
+  wobbleRad: number;
+}
+
+interface PoseSnapshot {
+  position: Vec3;
+  quaternion: Quat;
+  wheels: [WheelPoseSnapshot, WheelPoseSnapshot, WheelPoseSnapshot, WheelPoseSnapshot];
+}
+
+function createPoseSnapshot(pos: Vec3, quat: Quat): PoseSnapshot {
+  const mkWheel = (): WheelPoseSnapshot => ({
+    suspensionOffset: 0,
+    steerAngleRad: 0,
+    spinAngleRad: 0,
+    wobbleRad: 0,
+  });
+  return {
+    position: [pos[0], pos[1], pos[2]],
+    quaternion: [quat[0], quat[1], quat[2], quat[3]],
+    wheels: [mkWheel(), mkWheel(), mkWheel(), mkWheel()],
+  };
+}
+
+function copyPoseSnapshot(src: PoseSnapshot, dst: PoseSnapshot): void {
+  dst.position[0] = src.position[0];
+  dst.position[1] = src.position[1];
+  dst.position[2] = src.position[2];
+  dst.quaternion[0] = src.quaternion[0];
+  dst.quaternion[1] = src.quaternion[1];
+  dst.quaternion[2] = src.quaternion[2];
+  dst.quaternion[3] = src.quaternion[3];
+  for (let i = 0; i < 4; i++) {
+    dst.wheels[i].suspensionOffset = src.wheels[i].suspensionOffset;
+    dst.wheels[i].steerAngleRad = src.wheels[i].steerAngleRad;
+    dst.wheels[i].spinAngleRad = src.wheels[i].spinAngleRad;
+    dst.wheels[i].wobbleRad = src.wheels[i].wobbleRad;
+  }
 }
 
 /**
@@ -180,6 +284,10 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
 
   private readonly chassisColliderOffsetY: number;
   private readonly chassisHalfExtents: Vec3;
+  private readonly drivenWheelCount: number;
+  private readonly avgWheelRadius: number;
+  private readonly prevPose: PoseSnapshot;
+  private readonly currPose: PoseSnapshot;
 
   private transmission: TransmissionMode;
   private gear = 1;
@@ -189,6 +297,11 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
   private lastThrottle = 0;
   private lastBrake = 0;
   private lastHandbrake = false;
+  private lastHorn = false;
+  private lastShiftEvent: ShiftDirection = null;
+  private turboBoost = 0;
+  private scrapeIntensity = 0;
+  private advanceAccumulator = 0;
   private simTime = 0;
   private health: MechanicalHealth = defaultMechanicalHealth();
   private disposed = false;
@@ -224,7 +337,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
 
     this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
     this.world.timestep = 1 / 60;
-    this.world.numSolverIterations = 6;
+    this.world.numSolverIterations = 4;
     this.eventQueue = new RAPIER.EventQueue(true);
 
     // Static world colliders first so queries and spawn work immediately.
@@ -327,12 +440,20 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
         steerAngleRad: 0,
         slipRatio: 0,
         wobbleRad: 0,
+        cachedSurface: 'asphalt',
       };
     });
 
     this.wheels = [runtimes[0], runtimes[1], runtimes[2], runtimes[3]];
+    this.drivenWheelCount = this.wheels.filter((w) => w.cfg.driven).length || 2;
+    this.avgWheelRadius =
+      this.wheels.reduce((sum, w) => sum + w.cfg.radius, 0) / this.wheels.length;
+    this.prevPose = createPoseSnapshot(spawnPos, spawnQuat);
+    this.currPose = createPoseSnapshot(spawnPos, spawnQuat);
     this.world.propagateModifiedBodyPositionsToColliders();
     this.world.updateSceneQueries();
+    this.captureCurrentPose();
+    copyPoseSnapshot(this.currPose, this.prevPose);
   }
 
   /** Creates a new physics world with initialized Rapier3D WASM, vehicle controller, and static colliders. */
@@ -401,6 +522,11 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     this.lastThrottle = 0;
     this.lastBrake = 0;
     this.lastHandbrake = false;
+    this.lastHorn = false;
+    this.lastShiftEvent = null;
+    this.turboBoost = 0;
+    this.scrapeIntensity = 0;
+    this.advanceAccumulator = 0;
     this.lastImpactTimeByCollider.clear();
     this.activeContacts.clear();
     this.contactSnapshots.clear();
@@ -412,12 +538,78 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       this.wheels[i].angularVelocityRad = 0;
       this.wheels[i].steerAngleRad = 0;
       this.wheels[i].slipRatio = 0;
+      this.wheels[i].wobbleRad = 0;
     }
 
     this.world.propagateModifiedBodyPositionsToColliders();
     this.world.updateSceneQueries();
     this.vehicle.updateVehicle(1 / 60);
+    this.captureCurrentPose();
+    copyPoseSnapshot(this.currPose, this.prevPose);
     return this.getState();
+  }
+
+  /**
+   * Advances physics using an internal bounded fixed-timestep accumulator (`fixedDt = 1/60s`,
+   * `maxSubsteps = 3`, clamped `frameDt <= 0.05s`) and returns both the latest simulation state
+   * and a smoothly interpolated visual state (`interpolatedState`) for jitter-free rendering at
+   * any display refresh rate (60 / 90 / 120 / 144 Hz or variable FPS).
+   */
+  advance(
+    frameDtSeconds: number,
+    input: VehicleControlInput,
+    fixedDt = 1 / 60,
+    maxSubsteps = 3,
+  ): PhysicsAdvanceResult {
+    this.assertNotDisposed();
+    const stepDt = clamp(fixedDt, 1 / 240, 1 / 30);
+    const boundedMax = Math.max(1, Math.min(6, Math.round(maxSubsteps)));
+    const clampedFrameDt = clamp(Number.isFinite(frameDtSeconds) ? frameDtSeconds : 0, 0, 0.05);
+
+    this.advanceAccumulator = Math.min(this.advanceAccumulator + clampedFrameDt, stepDt * boundedMax);
+
+    let substeps = 0;
+    let shiftPending = input.shift ?? 0;
+    let shiftEvent: ShiftDirection = null;
+    const impacts: PhysicsImpactRecord[] = [];
+    let state: VehiclePhysicsState | null = null;
+
+    while (this.advanceAccumulator >= stepDt && substeps < boundedMax) {
+      const stepInput: VehicleControlInput =
+        shiftPending !== 0
+          ? { ...input, shift: shiftPending }
+          : { ...input, shift: 0 };
+      shiftPending = 0;
+
+      const res = this.step(stepDt, stepInput);
+      state = res.state;
+      if (res.state.shiftEvent) shiftEvent = res.state.shiftEvent;
+      for (let i = 0; i < res.impacts.length; i++) {
+        impacts.push(res.impacts[i]);
+      }
+
+      this.advanceAccumulator -= stepDt;
+      substeps += 1;
+    }
+
+    if (!state) {
+      this.lastHorn = Boolean(input.horn);
+      this.lastShiftEvent = null;
+      state = this.getState();
+    }
+
+    const alpha = clamp(this.advanceAccumulator / stepDt, 0, 1);
+    const interpolatedState = this.getInterpolatedState(alpha);
+    interpolatedState.shiftEvent = shiftEvent;
+
+    return {
+      state,
+      interpolatedState,
+      alpha,
+      substeps,
+      impacts,
+      shiftEvent,
+    };
   }
 
   step(dtSeconds: number, input: VehicleControlInput): PhysicsStepResult {
@@ -425,6 +617,9 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     const dt = clamp(dtSeconds, 1 / 240, 1 / 20);
     this.simTime += dt;
     this.shiftCooldown = Math.max(0, this.shiftCooldown - dt);
+
+    // Snapshot previous pose before advancing Rapier so visual interpolation is exact.
+    copyPoseSnapshot(this.currPose, this.prevPose);
 
     const throttle = clamp(input.throttle, 0, 1);
     const brake = clamp(input.brake, 0, 1);
@@ -435,6 +630,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     this.lastThrottle = throttle;
     this.lastBrake = brake;
     this.lastHandbrake = handbrake;
+    this.lastHorn = Boolean(input.horn);
 
     // Pre-step kinematics for accurate drivetrain, aero, and crash relative speed
     const preVel = this.chassisBody.linvel();
@@ -446,8 +642,9 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     const lateralSpeedMs = localVel[0];
     const absSpeedMs = Math.hypot(preVel.x, preVel.y, preVel.z);
 
-    // 1. Speed-sensitive steering + mechanical steering pull
-    const steerRate = Math.abs(steerInput) > Math.abs(this.smoothedSteer) ? 7.5 : 9.5;
+    // 1. Snappy speed-sensitive steering + mechanical steering pull
+    // High actuator rate prevents double-smoothing lag on top of keyboard ramp while keeping gamepad smooth.
+    const steerRate = Math.abs(steerInput) > Math.abs(this.smoothedSteer) ? 16.0 : 20.0;
     const steerDelta = steerInput - this.smoothedSteer;
     const maxStep = steerRate * dt;
     this.smoothedSteer += clamp(steerDelta, -maxStep, maxStep);
@@ -463,7 +660,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       this.config.maxSteerAngleRad,
     );
 
-    // 2. Gearbox & RPM
+    // 2. Gearbox, RPM & Turbo boost spool
     const { driveForceTotal, serviceBrakeForce } = this.updatePowertrain(
       dt,
       throttle,
@@ -474,7 +671,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     );
 
     // 3. Apply per-wheel steering, drive force, braking, surface grip, and damage penalties
-    const drivenWheels = this.wheels.filter((w) => w.cfg.driven).length || 2;
+    const drivenWheels = this.drivenWheelCount;
     const awdFrontShare = this.config.drivetrain === 'awd' ? 0.36 : 0;
     const awdRearShare = this.config.drivetrain === 'awd' ? 0.64 : 0;
 
@@ -484,6 +681,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       const wheelHealth = this.health.wheelIntegrity[i];
       const groundCollider = this.vehicle.wheelGroundObject(i);
       const surface = (groundCollider ? this.colliderMeta.get(groundCollider.handle)?.surface : undefined) ?? 'asphalt';
+      w.cachedSurface = surface;
       const surfaceMult = SURFACE_GRIP_MULT[surface];
 
       // Steering (Ackermann-style slight inner-wheel bias on front axle)
@@ -546,6 +744,10 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     // 7. Drain rigid-body collision/contact-force events into exact DamageBridge ImpactEvents
     const impacts = this.collectImpactEvents(dt, preVelVec);
 
+    // 8. Update continuous sliding scrape telemetry & snapshot post-step visual pose
+    this.updateScrapeIntensity(dt, absSpeedMs);
+    this.captureCurrentPose();
+
     return {
       state: this.getState(),
       impacts,
@@ -553,14 +755,99 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
   }
 
   getState(): VehiclePhysicsState {
-    this.assertNotDisposed();
+    return this.buildState(1);
+  }
+
+  /**
+   * Returns a smoothly interpolated `VehiclePhysicsState` between the previous fixed substep
+   * (`alpha = 0`) and the latest fixed substep (`alpha = 1`), eliminating visual stutter when
+   * rendering FPS differs from the fixed physics tick rate.
+   */
+  getInterpolatedState(alpha: number): VehiclePhysicsState {
+    return this.buildState(clamp(alpha, 0, 1));
+  }
+
+  private captureCurrentPose(): void {
     const t = this.chassisBody.translation();
     const r = this.chassisBody.rotation();
+    this.currPose.position[0] = t.x;
+    this.currPose.position[1] = t.y;
+    this.currPose.position[2] = t.z;
+    this.currPose.quaternion[0] = r.x;
+    this.currPose.quaternion[1] = r.y;
+    this.currPose.quaternion[2] = r.z;
+    this.currPose.quaternion[3] = r.w;
+
+    for (let i = 0; i < 4; i++) {
+      const w = this.wheels[i];
+      const inContact = this.vehicle.wheelIsInContact(i);
+      const suspLen = inContact
+        ? (this.vehicle.wheelSuspensionLength(i) ?? w.restLength)
+        : w.restLength;
+      const wp = this.currPose.wheels[i];
+      wp.suspensionOffset = (w.connectionY - suspLen) - w.cfg.radius;
+      wp.steerAngleRad = w.steerAngleRad;
+      wp.spinAngleRad = w.spinAngleRad;
+      wp.wobbleRad = w.wobbleRad;
+    }
+  }
+
+  private updateScrapeIntensity(dt: number, speedMs: number): void {
+    let targetScrape = 0;
+    if (this.activeContacts.size > 0 && speedMs > 1.0) {
+      let hasObstacleContact = false;
+      let hasGroundContact = false;
+      for (const handle of this.activeContacts) {
+        const meta = this.colliderMeta.get(handle);
+        if (meta?.tag && DRIVABLE_TAGS.has(meta.tag)) {
+          hasGroundContact = true;
+        } else {
+          hasObstacleContact = true;
+        }
+      }
+      if (hasObstacleContact) {
+        targetScrape = clamp((speedMs - 0.8) / 14, 0.2, 1.0);
+      } else if (hasGroundContact && speedMs > 3.0) {
+        // Underbody/roof scraping asphalt at speed
+        targetScrape = clamp((speedMs - 2.5) / 18, 0.15, 0.85);
+      }
+    }
+
+    const rate = targetScrape > this.scrapeIntensity ? 18 : 10;
+    const blend = 1 - Math.exp(-dt * rate);
+    this.scrapeIntensity += (targetScrape - this.scrapeIntensity) * blend;
+    if (this.scrapeIntensity < 0.005) this.scrapeIntensity = 0;
+  }
+
+  private buildState(alpha: number): VehiclePhysicsState {
+    this.assertNotDisposed();
     const lv = this.chassisBody.linvel();
     const av = this.chassisBody.angvel();
 
-    const pos: Vec3 = [t.x, t.y, t.z];
-    const quat: Quat = [r.x, r.y, r.z, r.w];
+    const pos: Vec3 =
+      alpha >= 1
+        ? [this.currPose.position[0], this.currPose.position[1], this.currPose.position[2]]
+        : alpha <= 0
+          ? [this.prevPose.position[0], this.prevPose.position[1], this.prevPose.position[2]]
+          : lerpVec3(this.prevPose.position, this.currPose.position, alpha);
+
+    const quat: Quat =
+      alpha >= 1
+        ? [
+            this.currPose.quaternion[0],
+            this.currPose.quaternion[1],
+            this.currPose.quaternion[2],
+            this.currPose.quaternion[3],
+          ]
+        : alpha <= 0
+          ? [
+              this.prevPose.quaternion[0],
+              this.prevPose.quaternion[1],
+              this.prevPose.quaternion[2],
+              this.prevPose.quaternion[3],
+            ]
+          : slerpQuat(this.prevPose.quaternion, this.currPose.quaternion, alpha);
+
     const linVel: Vec3 = [lv.x, lv.y, lv.z];
     const angVel: Vec3 = [av.x, av.y, av.z];
     const localVel = rotateVecByInvQuat(linVel, quat);
@@ -568,36 +855,78 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     const totalSpeedMs = Math.hypot(lv.x, lv.y, lv.z);
 
     let groundedWheels = 0;
-    const wheelStates = this.wheels.map((w, i): WheelPhysicsState => {
+    let maxSlip = 0;
+    let compressionSum = 0;
+    let dominantSurface: AudioSurfaceType = 'asphalt';
+    let surfaceAssigned = false;
+
+    const wheelStates: WheelPhysicsState[] = new Array(4);
+    for (let i = 0; i < 4; i++) {
+      const w = this.wheels[i];
       const inContact = this.vehicle.wheelIsInContact(i);
-      if (inContact) groundedWheels += 1;
       const suspLen = inContact
         ? (this.vehicle.wheelSuspensionLength(i) ?? w.restLength)
         : w.restLength;
-      // Vertical offset from nominal rest hub position (+ = compressed upward, - = drooped down).
-      const suspensionOffset = (w.connectionY - suspLen) - w.cfg.radius;
       const minLen = Math.max(0.02, w.restLength - this.config.suspensionTravel);
       const compression = clamp((w.restLength - suspLen) / Math.max(0.01, w.restLength - minLen), 0, 1);
 
       const cp = inContact ? this.vehicle.wheelContactPoint(i) : null;
-      const groundCollider = inContact ? this.vehicle.wheelGroundObject(i) : null;
-      const surface = (groundCollider ? this.colliderMeta.get(groundCollider.handle)?.surface : undefined) ?? 'asphalt';
+      const surface = inContact ? w.cachedSurface : 'asphalt';
 
-      return {
+      if (inContact) {
+        groundedWheels += 1;
+        compressionSum += compression;
+        if (w.slipRatio > maxSlip) maxSlip = w.slipRatio;
+        const audioSurf = toAudioSurface(surface);
+        // Prefer off-road/rough surface if any grounded wheel hits gravel/grass, else first grounded surface
+        if (!surfaceAssigned || audioSurf === 'gravel' || audioSurf === 'grass') {
+          dominantSurface = audioSurf;
+          surfaceAssigned = true;
+        }
+      }
+
+      const prevW = this.prevPose.wheels[i];
+      const currW = this.currPose.wheels[i];
+      const suspensionOffset =
+        alpha >= 1
+          ? currW.suspensionOffset
+          : alpha <= 0
+            ? prevW.suspensionOffset
+            : lerp(prevW.suspensionOffset, currW.suspensionOffset, alpha);
+      const steerAngleRad =
+        alpha >= 1
+          ? currW.steerAngleRad
+          : alpha <= 0
+            ? prevW.steerAngleRad
+            : lerp(prevW.steerAngleRad, currW.steerAngleRad, alpha);
+      const spinAngleRad =
+        alpha >= 1
+          ? currW.spinAngleRad
+          : alpha <= 0
+            ? prevW.spinAngleRad
+            : lerp(prevW.spinAngleRad, currW.spinAngleRad, alpha);
+      const wobbleRad =
+        alpha >= 1
+          ? currW.wobbleRad
+          : alpha <= 0
+            ? prevW.wobbleRad
+            : lerp(prevW.wobbleRad, currW.wobbleRad, alpha);
+
+      wheelStates[i] = {
         corner: w.cfg.corner,
         inContact,
         suspensionOffset,
         suspensionLength: suspLen,
         compression,
-        steerAngleRad: w.steerAngleRad,
-        spinAngleRad: w.spinAngleRad,
+        steerAngleRad,
+        spinAngleRad,
         angularVelocityRad: w.angularVelocityRad,
         slipRatio: w.slipRatio,
-        wobbleRad: w.wobbleRad,
+        wobbleRad,
         contactPoint: cp ? [cp.x, cp.y, cp.z] : null,
         surface,
       };
-    });
+    }
 
     return {
       position: pos,
@@ -609,14 +938,23 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       speedMph: totalSpeedMs * MS_TO_MPH,
       headingRad: headingFromQuat(quat),
       rpm: Math.round(this.rpm),
+      idleRpm: this.config.idleRpm,
+      redlineRpm: this.config.maxRpm,
       maxRpm: this.config.maxRpm,
       gear: this.gear,
       gearLabel: this.gear === -1 ? 'R' : this.gear === 0 ? 'N' : String(this.gear),
+      shiftEvent: this.lastShiftEvent,
       transmission: this.transmission,
       throttle: this.lastThrottle,
       brake: this.lastBrake,
       steer: this.smoothedSteer,
       handbrake: this.lastHandbrake,
+      turboBoost: this.turboBoost,
+      slipRatio: groundedWheels > 0 ? clamp(maxSlip, 0, 1) : 0,
+      wheelLoad: groundedWheels > 0 ? clamp(compressionSum / groundedWheels, 0, 1) : 0,
+      surface: dominantSurface,
+      scrapeIntensity: this.scrapeIntensity,
+      horn: this.lastHorn,
       airborne: groundedWheels === 0,
       groundedWheels,
       wheels: [wheelStates[0], wheelStates[1], wheelStates[2], wheelStates[3]],
@@ -717,16 +1055,17 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     const idleRpm = this.config.idleRpm;
     const maxRpm = this.config.maxRpm;
 
+    const gearBefore = this.gear;
     let effectiveThrottle = throttle;
     let effectiveBrake = brake;
 
     if (this.transmission === 'manual') {
       if (shiftReq === 1 && this.gear < maxGear) {
         this.gear += 1;
-        this.shiftCooldown = 0.2;
+        this.shiftCooldown = 0.16;
       } else if (shiftReq === -1 && this.gear > -1) {
         this.gear -= 1;
-        this.shiftCooldown = 0.2;
+        this.shiftCooldown = 0.16;
       }
     } else {
       // Automatic gearbox with smooth brake-to-reverse logic
@@ -740,7 +1079,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
             effectiveBrake = throttle;
           } else {
             this.gear = 1;
-            this.shiftCooldown = 0.25;
+            this.shiftCooldown = 0.2;
           }
         } else if (brake > 0.08) {
           // Pressing brake in reverse accelerates backward
@@ -750,27 +1089,29 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       } else {
         if (brake > 0.15 && throttle < 0.08 && forwardSpeedMs < 0.65) {
           this.gear = -1;
-          this.shiftCooldown = 0.25;
+          this.shiftCooldown = 0.2;
           effectiveThrottle = brake;
           effectiveBrake = 0;
         } else if (this.shiftCooldown <= 0) {
           if (this.rpm >= maxRpm * 0.89 && this.gear < maxGear && throttle > 0.2) {
             this.gear += 1;
-            this.shiftCooldown = 0.32;
+            this.shiftCooldown = 0.24;
           } else if (
             this.gear > 1
             && (this.rpm < maxRpm * 0.40 || (throttle > 0.85 && this.rpm < maxRpm * 0.56))
           ) {
             this.gear -= 1;
-            this.shiftCooldown = 0.28;
+            this.shiftCooldown = 0.22;
           }
         }
       }
     }
 
+    this.lastShiftEvent =
+      this.gear > gearBefore ? 'up' : this.gear < gearBefore ? 'down' : null;
+
     // Compute engine RPM from wheel angular speed + clutch slip
-    const drivenRadius =
-      this.wheels.reduce((s, w) => s + w.cfg.radius, 0) / this.wheels.length;
+    const drivenRadius = this.avgWheelRadius;
     const currentRatio =
       this.gear === -1
         ? this.config.reverseRatio
@@ -785,18 +1126,31 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       const wheelRpm = (Math.abs(forwardSpeedMs) / (2 * Math.PI * drivenRadius)) * 60;
       const coupledRpm = wheelRpm * currentRatio * this.config.finalDrive;
       const clutchSlipRpm = idleRpm + effectiveThrottle * 2400;
-      const clutchBlend = clamp(Math.abs(forwardSpeedMs) / 4.5, 0, 1);
+      const clutchBlend = clamp(Math.abs(forwardSpeedMs) / 4.2, 0, 1);
       targetRpm = Math.max(idleRpm, clutchSlipRpm * (1 - clutchBlend) + coupledRpm * clutchBlend);
     }
     targetRpm = clamp(targetRpm, idleRpm, maxRpm * 1.02);
 
-    const rpmLerp = 1 - Math.exp(-dt * 12);
+    const rpmLerp = 1 - Math.exp(-dt * 14);
     this.rpm += (targetRpm - this.rpm) * rpmLerp;
 
     // Engine torque & wheel tractive force
     const rpmNorm = (this.rpm - idleRpm) / Math.max(1, maxRpm - idleRpm);
     const engineDamageScale = 0.22 + 0.78 * this.health.engineHealth;
     const revLimiterScale = this.rpm >= maxRpm * 0.995 ? 0.15 : 1.0;
+
+    // Turbocharger spool model (spools under load above ~22% RPM, dumps on lift-off or upshift)
+    const boostRpmFactor = clamp((rpmNorm - 0.18) / 0.55, 0, 1);
+    const targetBoost =
+      this.lastShiftEvent === 'up'
+        ? 0.08
+        : effectiveThrottle * boostRpmFactor * engineDamageScale;
+    const boostRate = targetBoost > this.turboBoost ? 3.8 : 9.5;
+    this.turboBoost = clamp(
+      this.turboBoost + (targetBoost - this.turboBoost) * (1 - Math.exp(-dt * boostRate)),
+      0,
+      1,
+    );
 
     // Cap torque by peak power curve (P = T * omega) so high gears don't over-accelerate infinitely
     const omegaRadS = Math.max(100, (this.rpm * 2 * Math.PI) / 60);

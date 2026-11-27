@@ -8,6 +8,7 @@ import {
   type StanceConfig,
   type UniversalPartsConfig,
 } from '@blend-garage/vehicle-core';
+import { SoundEngine } from './audio';
 import { clearSavedBuild, loadSavedBuild, loadSession, parseBuildFile, saveBuild, saveSession, type Session } from './builds';
 import { CameraDirector } from './camera/CameraDirector';
 import { fetchCatalog, fetchVehicleManifest } from './catalog';
@@ -22,6 +23,9 @@ import { VehicleLoader } from './vehicle/VehicleLoader';
 import type { VehicleRig } from './vehicle/VehicleRig';
 
 const MAX_PIXEL_RATIO = 1.5;
+const DRIVE_MAX_PIXEL_RATIO = 1.25;
+const DRIVE_MIN_PIXEL_RATIO = 0.85;
+const PAINT_AUDIO_COOLDOWN_MS = 120;
 const ROLL_SECONDS = 3.6;
 const SAVE_DELAY_MS = 450;
 /** Rapid clicks through the selector only start a load once the user settles on a car. */
@@ -47,6 +51,8 @@ function describe(error: unknown): string {
  * and the one car on stage; the HUD calls its methods and re-renders from `getSnapshot()`.
  */
 export class GarageEngine {
+  readonly sound = new SoundEngine();
+
   private readonly store: Store<EngineSnapshot>;
   private readonly scene = new THREE.Scene();
   private readonly loader = new VehicleLoader();
@@ -55,6 +61,7 @@ export class GarageEngine {
   private shop: ShopEnvironment | null = null;
   private director: CameraDirector | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private unsubSound: (() => void) | null = null;
 
   private rig: VehicleRig | null = null;
   private build: CarBuild | null = null;
@@ -72,6 +79,9 @@ export class GarageEngine {
   private carZ = TURNTABLE.z;
   private lastPose = '';
   private lastLift = 0;
+  private lastLiftMoving = false;
+  private lastPaintAudioAt = 0;
+  private drivePixelRatio = DRIVE_MAX_PIXEL_RATIO;
   private lastUserMove = -Infinity;
   private insets: ViewInsets = { left: 0, right: 0, top: 0, bottom: 0 };
   private now = 0;
@@ -104,6 +114,10 @@ export class GarageEngine {
       notice: null,
       curtain: 0,
       drive: null,
+      audio: this.sound.getState(),
+    });
+    this.unsubSound = this.sound.subscribe(() => {
+      if (!this.disposed) this.store.set({ audio: this.sound.getState() });
     });
   }
 
@@ -115,18 +129,29 @@ export class GarageEngine {
   start(): void {
     if (this.started) return;
     this.started = true;
+    window.addEventListener('pointerdown', this.handleFirstGesture, { passive: true });
+    window.addEventListener('keydown', this.handleFirstGesture, { passive: true });
+    window.addEventListener('keydown', this.handleGlobalKeyDown);
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
     void this.boot();
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    window.removeEventListener('pointerdown', this.handleFirstGesture);
+    window.removeEventListener('keydown', this.handleFirstGesture);
+    window.removeEventListener('keydown', this.handleGlobalKeyDown);
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    this.unsubSound?.();
+    this.unsubSound = null;
     clearTimeout(this.selectTimer);
     clearTimeout(this.noticeTimer);
     this.flushSave();
     for (const tween of this.tweens.splice(0)) tween.resolve();
     this.driveSession?.dispose();
     this.driveSession = null;
+    this.sound.dispose();
     this.loader.dispose();
     this.rig?.dispose();
     this.rig = null;
@@ -139,6 +164,28 @@ export class GarageEngine {
       this.renderer.dispose();
     }
   }
+
+  private readonly handleFirstGesture = (): void => {
+    window.removeEventListener('pointerdown', this.handleFirstGesture);
+    window.removeEventListener('keydown', this.handleFirstGesture);
+    void this.sound.unlock().then((ok) => {
+      if (!ok || this.disposed) return;
+      const screen = this.store.get().screen;
+      this.sound.setMode(screen === 'drive' ? 'drive' : 'shop');
+    });
+  };
+
+  private readonly handleVisibilityChange = (): void => {
+    this.sound.setPaused(document.hidden);
+  };
+
+  private readonly handleGlobalKeyDown = (event: KeyboardEvent): void => {
+    if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.code !== 'KeyM') return;
+    const el = event.target as HTMLElement | null;
+    if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+    this.toggleMute();
+  };
 
   private async boot(): Promise<void> {
     // The shop's painted signs are drawn with the HUD's typeface, so wait (briefly) for it.
@@ -173,6 +220,7 @@ export class GarageEngine {
     this.director.setInsets(this.insets, true);
     this.shop = new ShopEnvironment(this.scene, renderer);
     this.shop.lighting.setMood(this.session.mood);
+    this.sound.setMode('shop');
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.canvas);
@@ -191,7 +239,8 @@ export class GarageEngine {
     if (!this.renderer || !this.director) return;
     const width = this.canvas.clientWidth || window.innerWidth;
     const height = this.canvas.clientHeight || window.innerHeight;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
+    const maxDpr = this.driveSession ? this.drivePixelRatio : MAX_PIXEL_RATIO;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
     this.renderer.setSize(width, height, false);
     this.director.setSize(width, height);
     this.driveSession?.resize(width, height);
@@ -317,6 +366,7 @@ export class GarageEngine {
       this.store.set({ manifest, rig: rig.summary, build, savedAt: saved ? Date.parse(saved.updatedAt) || null : null, load: { carId, phase: 'ready', progress: 1, error: null } });
       this.session.lastCarId = carId;
       saveSession(this.session);
+      this.sound.playCarSelect({ id: manifest.id, name: manifest.name });
     } catch (error) {
       report('error', 0, describe(error));
     }
@@ -349,6 +399,8 @@ export class GarageEngine {
     const { rig, shop, director } = this;
     const s = this.store.get();
     if (!rig || !shop || !director || s.busy || s.screen !== 'selector' || s.load?.phase !== 'ready') return;
+    void this.sound.unlock();
+    this.sound.playCameraSwoosh();
     this.store.set({ busy: 'rolling-in' });
 
     // Square the car up on the turntable, nose toward the hall.
@@ -387,12 +439,16 @@ export class GarageEngine {
     const { shop, director } = this;
     const s = this.store.get();
     if (!shop || !director || s.busy || s.screen !== 'shop') return;
+    void this.sound.unlock();
+    this.sound.playCameraSwoosh();
     this.store.set({ busy: 'leaving' });
     await this.animate(0.26, (k) => this.store.set({ curtain: k }));
     if (this.disposed) return;
 
     director.setMode('orbit');
     shop.lift.reset();
+    this.sound.setLiftMoving(false);
+    this.lastLiftMoving = false;
     this.rig?.setLiftHeight(0);
     this.lastLift = 0;
     this.onTurntable = true;
@@ -416,6 +472,7 @@ export class GarageEngine {
     const s = this.store.get();
     if (!rig || !build || !shop || !director || !renderer || s.busy || s.screen !== 'shop') return;
 
+    void this.sound.unlock();
     this.flushSave();
     this.store.set({ busy: 'entering-drive' });
     await this.animate(0.22, (k) => this.store.set({ curtain: k }));
@@ -424,7 +481,14 @@ export class GarageEngine {
     director.setMode('orbit');
     shop.group.visible = false;
     shop.lighting.group.visible = false;
+    shop.lift.stop();
+    this.sound.setLiftMoving(false);
+    this.lastLiftMoving = false;
     rig.setLiftHeight(0);
+
+    // Faster 4-tap PCF shadows and capped HiDPI scale keep Open-World Drive Mode responsive on laptop GPUs.
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.drivePixelRatio = Math.min(window.devicePixelRatio, DRIVE_MAX_PIXEL_RATIO);
 
     try {
       const session = await DriveSession.create({
@@ -433,6 +497,7 @@ export class GarageEngine {
         canvas: this.canvas,
         rig,
         build,
+        sound: this.sound,
         width: this.canvas.clientWidth || window.innerWidth,
         height: this.canvas.clientHeight || window.innerHeight,
         onExit: () => void this.exitDrive(),
@@ -443,12 +508,16 @@ export class GarageEngine {
         return;
       }
       this.driveSession = session;
+      this.resize();
       renderer.shadowMap.needsUpdate = true;
       this.store.set({ screen: 'drive', drive: session.getSnapshot() });
     } catch (error) {
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       shop.group.visible = true;
       shop.lighting.group.visible = true;
       rig.restoreShopPose();
+      this.sound.setMode('shop');
+      this.resize();
       this.notify(`Could not start Open-World Drive Mode: ${describe(error)}`, 'error');
       await this.animate(0.22, (k) => this.store.set({ curtain: 1 - k }));
       if (!this.disposed) this.store.set({ busy: null, curtain: 0 });
@@ -471,12 +540,17 @@ export class GarageEngine {
 
     this.driveSession?.dispose();
     this.driveSession = null;
+    this.sound.setMode('shop');
+
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.resize();
 
     shop.group.visible = true;
     shop.lighting.group.visible = true;
     shop.lift.reset();
     this.rig?.restoreShopPose();
     this.lastLift = 0;
+    this.lastLiftMoving = false;
     this.onTurntable = false;
     this.carZ = HERO_BAY.z;
     this.lastPose = '';
@@ -525,6 +599,30 @@ export class GarageEngine {
     if (!this.driveSession || this.store.get().screen !== 'drive') return;
     this.driveSession.toggleLights();
     this.store.set({ drive: this.driveSession.getSnapshot() });
+  }
+
+  // ------------------------------------------------------------------ audio controls
+
+  toggleMute(): void {
+    void this.sound.unlock();
+    this.sound.toggleMute();
+  }
+
+  setMasterVolume(volume: number): void {
+    void this.sound.unlock();
+    this.sound.setMasterVolume(volume);
+  }
+
+  playUiClick(): void {
+    void this.sound.unlock();
+    this.sound.playUiClick();
+  }
+
+  private playPaintSprayThrottled(): void {
+    const now = performance.now();
+    if (now - this.lastPaintAudioAt < PAINT_AUDIO_COOLDOWN_MS) return;
+    this.lastPaintAudioAt = now;
+    this.sound.playPaintSpray();
   }
 
   /** Aims the selector camera at the turntable. */
@@ -579,6 +677,7 @@ export class GarageEngine {
     const build = this.build;
     const current = build?.paintZones[zoneId];
     if (!build || !current) return;
+    this.playPaintSprayThrottled();
     this.commit({ ...build, paintZones: { ...build.paintZones, [zoneId]: { ...current, ...patch, modified: true } } });
   }
 
@@ -588,6 +687,7 @@ export class GarageEngine {
     if (!build) return;
     const paintZones = { ...build.paintZones };
     for (const zoneId of zoneIds) if (paintZones[zoneId]) paintZones[zoneId] = { ...paintZones[zoneId], ...patch, modified: true };
+    this.playPaintSprayThrottled();
     this.commit({ ...build, paintZones });
   }
 
@@ -599,6 +699,7 @@ export class GarageEngine {
     const stock = rig.stockZoneStates();
     const paintZones = { ...build.paintZones };
     for (const zoneId of zoneIds) if (stock[zoneId]) paintZones[zoneId] = stock[zoneId];
+    this.sound.playStockReset();
     this.commit({ ...build, paintZones });
   }
 
@@ -608,26 +709,38 @@ export class GarageEngine {
   }
 
   setRimFinish(finish: PaintZoneState | null): void {
-    if (this.build) this.commit({ ...this.build, rimFinish: finish ? { ...finish, modified: true } : null });
+    if (!this.build) return;
+    this.playPaintSprayThrottled();
+    this.commit({ ...this.build, rimFinish: finish ? { ...finish, modified: true } : null });
   }
 
   setGlassTint(tint: GlassTintConfig | null): void {
-    if (this.build) this.commit({ ...this.build, glassTint: tint });
+    if (!this.build) return;
+    this.playPaintSprayThrottled();
+    this.commit({ ...this.build, glassTint: tint });
   }
 
   setPartVisible(partId: string, visible: boolean): void {
     const build = this.build;
-    if (build && partId in build.partVisibility) this.commit({ ...build, partVisibility: { ...build.partVisibility, [partId]: visible } });
+    if (build && partId in build.partVisibility) {
+      if (visible) this.sound.playPartInstall();
+      else this.sound.playPartRemove();
+      this.commit({ ...build, partVisibility: { ...build.partVisibility, [partId]: visible } });
+    }
   }
 
   setAllPartsVisible(visible: boolean): void {
     const build = this.build;
     if (!build) return;
+    if (visible) this.sound.playPartInstall();
+    else this.sound.playPartRemove();
     this.commit({ ...build, partVisibility: Object.fromEntries(Object.keys(build.partVisibility).map((id) => [id, visible])) });
   }
 
   setUniversalParts(patch: Partial<UniversalPartsConfig>): void {
-    if (this.build) this.commit({ ...this.build, universalParts: { ...this.build.universalParts, ...patch } });
+    if (!this.build) return;
+    this.sound.playPartInstall();
+    this.commit({ ...this.build, universalParts: { ...this.build.universalParts, ...patch } });
   }
 
   setStance(patch: Partial<StanceConfig>): void {
@@ -647,7 +760,9 @@ export class GarageEngine {
   }
 
   setLights(on: boolean): void {
-    if (this.build) this.commit({ ...this.build, lightsOn: on });
+    if (!this.build) return;
+    this.sound.playLightSwitch();
+    this.commit({ ...this.build, lightsOn: on });
   }
 
   renameBuild(name: string): void {
@@ -659,6 +774,7 @@ export class GarageEngine {
   resetBuild(): void {
     const { rig, build } = this;
     if (!rig || !build) return;
+    this.sound.playStockReset();
     this.commit(this.withStockZones(createDefaultBuild(rig.manifest), rig));
     clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
@@ -680,6 +796,7 @@ export class GarageEngine {
     if (!rig) return 'Load a car before importing a build.';
     const result = parseBuildFile(text, rig.manifest);
     if (!result.ok) return result.error;
+    this.sound.playPartInstall();
     this.commit(this.withStockZones(result.build, rig));
     this.notify(`Imported "${result.build.buildName}".`);
     return null;
@@ -690,14 +807,17 @@ export class GarageEngine {
   setLiftTarget(height: number): void {
     const s = this.store.get();
     if (!this.shop || s.screen !== 'shop' || s.busy) return;
+    this.sound.playUiClick();
     this.shop.lift.setTarget(height);
   }
 
   stopLift(): void {
+    this.sound.playUiClick();
     this.shop?.lift.stop();
   }
 
   setMood(mood: LightingMoodId): void {
+    this.sound.playLightSwitch();
     this.shop?.lighting.setMood(mood);
     this.session.mood = mood;
     saveSession(this.session);
@@ -707,6 +827,7 @@ export class GarageEngine {
   setCameraMode(mode: CameraMode): void {
     const s = this.store.get();
     if (!this.director || s.screen !== 'shop' || s.busy) return;
+    this.sound.playCameraSwoosh();
     this.director.setMode(mode);
     this.store.set({ cameraMode: mode, cameraPreset: null });
   }
@@ -716,6 +837,7 @@ export class GarageEngine {
     const { director, shop, rig } = this;
     const s = this.store.get();
     if (!director || !shop || !rig || s.screen !== 'shop' || s.busy) return;
+    this.sound.playCameraSwoosh();
     if (director.mode !== 'orbit') director.setMode('orbit');
     const liftGoal = preset === 'under' ? shop.lift.maxHeight : shop.lift.target;
     if (preset === 'under') shop.lift.setTarget(liftGoal);
@@ -905,6 +1027,10 @@ export class GarageEngine {
     shop.setTurntableAngle(this.turntableAngle);
 
     const liftMoving = shop.lift.update(dt);
+    if (liftMoving !== this.lastLiftMoving) {
+      this.lastLiftMoving = liftMoving;
+      this.sound.setLiftMoving(liftMoving);
+    }
     const lift = shop.lift.height;
     const rig = this.rig;
     let shadowsDirty = liftMoving;
@@ -956,6 +1082,19 @@ export class GarageEngine {
       const median = Float32Array.from(this.frameTimes).sort()[this.frameTimes.length >> 1];
       const fps = Math.round(1 / Math.max(median, 1e-4));
       this.statsSince = this.now;
+
+      // Adaptive Drive Mode pixel ratio keeps frame rates fluid on integrated/battery laptop GPUs.
+      if (this.driveSession) {
+        const cap = Math.min(window.devicePixelRatio, DRIVE_MAX_PIXEL_RATIO);
+        if (median > 0.022 && this.drivePixelRatio > DRIVE_MIN_PIXEL_RATIO) {
+          this.drivePixelRatio = Math.max(DRIVE_MIN_PIXEL_RATIO, Math.round((this.drivePixelRatio - 0.1) * 100) / 100);
+          this.resize();
+        } else if (median < 0.013 && this.drivePixelRatio < cap) {
+          this.drivePixelRatio = Math.min(cap, Math.round((this.drivePixelRatio + 0.05) * 100) / 100);
+          this.resize();
+        }
+      }
+
       const perf = this.store.get().perf;
       const drawCalls = renderer.info.render.calls;
       const triangles = renderer.info.render.triangles;

@@ -1,5 +1,6 @@
 import type { MechanicalHealth } from '@blend-garage/damage-bridge';
 import type { CarBuild, PaintZoneRole, VehicleManifest } from '@blend-garage/vehicle-core';
+import type { AudioStateSnapshot } from './audio';
 
 /** The three screens of the app: browsing cars in the photo bay, working on one in the shop, or driving in the open world. */
 export type Screen = 'selector' | 'shop' | 'drive';
@@ -35,6 +36,8 @@ export interface DriveSnapshot {
   totalImpacts: number;
   spawnName: string;
   lightsOn: boolean;
+  turboBoost: number;
+  hornActive: boolean;
 }
 
 export type CameraMode = 'orbit' | 'walk' | 'fly';
@@ -156,6 +159,8 @@ export interface EngineSnapshot {
   curtain: number;
   /** Live driving telemetry & crash damage state while `screen === 'drive'`, otherwise `null`. */
   drive: DriveSnapshot | null;
+  /** Procedural Web Audio engine status (muted, master volume, unlocked). */
+  audio: AudioStateSnapshot;
 }
 
 /** Pixels of the viewport covered by HUD panels, so the camera can center the car in what is left. */

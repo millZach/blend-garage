@@ -7,6 +7,8 @@ export const WORLD_SIZE = 1200;
 export const WORLD_HALF = WORLD_SIZE / 2;
 /** Grid resolution for both visual terrain mesh and physics heightfield (161x161 = 7.5m cell spacing). */
 export const TERRAIN_SEGMENTS = 160;
+/** Splits the 160x160 visual terrain into 4x4 (16) frustum-cullable seamless tiles (40x40 quads each). */
+const TERRAIN_TILE_GRID = 4;
 
 function hash2(ix: number, iz: number): number {
   let n = Math.imul(ix, 374761393) + Math.imul(iz, 668265263);
@@ -112,21 +114,17 @@ function evaluateCaliforniaBiomeColor(
   const patch = fbm(x * 0.017 - 4.7, z * 0.017 + 6.3, 3) * 0.5 + 0.5;
   const micro = fbm(x * 0.045 + 9.2, z * 0.045 - 3.8, 2) * 0.5 + 0.5;
 
-  // Base California coastal meadow: mix of olive-green valley floor and sun-cured golden grass.
   out.copy(cOliveMeadow).lerp(cGoldenGrass, smoothstep(0.28, 0.74, macro));
   out.lerp(cDryOat, smoothstep(0.52, 0.88, patch) * 0.55);
   out.lerp(cSageScrub, smoothstep(0.18, 0.55, micro) * 0.35);
 
-  // Warm dusty earth along road verges & shoulders so roads blend organically into the landscape.
   if (shoulderBlend > 0.001) {
     out.lerp(cDustyEarth, shoulderBlend * 0.78);
   }
 
-  // Elevation transition: drier golden-ochre foothills & exposed upper ridges.
   const foothillDry = smoothstep(5, 22, y);
   out.lerp(cDustyEarth, foothillDry * 0.36);
 
-  // Stratified sandstone/granite cliff rock on steeper slopes & high canyon cuts.
   const strataWave = Math.sin(y * 0.72 + fbm(x * 0.018, z * 0.018, 2) * 2.4) * 0.5 + 0.5;
   const rockTone = _c9.copy(cGraniteShadow).lerp(cSandstone, 0.35 + strataWave * 0.65);
 
@@ -137,7 +135,6 @@ function evaluateCaliforniaBiomeColor(
     out.lerp(rockTone, rockMix * 0.92);
   }
 
-  // Sun-bleached granite crests on the highest distant mountain peaks.
   const peakMix = smoothstep(46, 92, y);
   if (peakMix > 0.001) {
     out.lerp(cWarmPeak, peakMix * 0.55);
@@ -178,21 +175,20 @@ function enableDualScaleTerrainMaterial(material: THREE.MeshStandardMaterial): v
 }
 
 /**
- * Builds a purely visual outer distant mountain range ring (from 585m out to 1080m) so the horizon
- * has multi-layered California Sierra/coastal silhouettes receding naturally into the golden haze.
+ * Builds a purely visual outer distant mountain range ring (from 585m out to 1080m) using a
+ * lightweight vertex-colored Lambert material (zero normal/roughness/shadow sampling in the haze).
  */
-function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.Mesh {
-  const radialSegs = 128;
-  const ringSegs = 6;
+function buildDistantMountainRing(material: THREE.Material): THREE.Mesh {
+  const radialSegs = 96;
+  const ringSegs = 5;
   const innerHalf = WORLD_HALF - 14;
   const outerHalf = 1080;
 
   const rings = ringSegs + 1;
   const cols = radialSegs + 1;
   const positions = new Float32Array(rings * cols * 3);
-  const uvs = new Float32Array(rings * cols * 2);
   const colors = new Float32Array(rings * cols * 3);
-  const indices = new Uint32Array(ringSegs * radialSegs * 6);
+  const indices = new Uint16Array(ringSegs * radialSegs * 6);
 
   for (let r = 0; r < rings; r++) {
     const t = r / ringSegs;
@@ -202,8 +198,6 @@ function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.M
       const dx = Math.cos(ang);
       const dz = Math.sin(ang);
 
-      // Map circle angle onto square perimeter at t=0 so the inner skirt joins the main terrain seamlessly,
-      // then morphs smoothly into a circular distant mountain amphitheater.
       const maxAxis = Math.max(Math.abs(dx), Math.abs(dz)) || 1;
       const sqX = (dx / maxAxis) * innerHalf;
       const sqZ = (dz / maxAxis) * innerHalf;
@@ -216,7 +210,6 @@ function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.M
 
       let y: number;
       if (r === 0) {
-        // Stitch slightly below the exact edge of the main terrain mesh.
         y = baseScenicHeight(x, z) - 1.2;
       } else {
         const ridge1 = ridgedFbm(x * 0.0019 + 3.2, z * 0.0019 - 2.1, 4);
@@ -231,8 +224,6 @@ function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.M
       positions[vi * 3] = x;
       positions[vi * 3 + 1] = y;
       positions[vi * 3 + 2] = z;
-      uvs[vi * 2] = x / 42;
-      uvs[vi * 2 + 1] = z / 42;
     }
   }
 
@@ -243,7 +234,6 @@ function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.M
       const b = r * cols + s + 1;
       const c = (r + 1) * cols + s;
       const d = (r + 1) * cols + s + 1;
-      // Verified CCW upward (+Y) winding: (b - a) x (c - a) = (+Z) x (+X) = +Y.
       indices[ptr++] = a;
       indices[ptr++] = b;
       indices[ptr++] = c;
@@ -255,7 +245,6 @@ function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.M
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
   geo.computeVertexNormals();
 
@@ -267,11 +256,13 @@ function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.M
     const z = positions[i * 3 + 2];
     const slope = 1 - clamp(Math.abs(normAttr.getY(i)), 0, 1);
     evaluateCaliforniaBiomeColor(x, y, z, slope, 0, tmp);
-    colors[i * 3] = tmp.r;
-    colors[i * 3 + 1] = tmp.g;
-    colors[i * 3 + 2] = tmp.b;
+    // Match neutral terrainDetail luminance (~0.88) so the stitch line to the main terrain is invisible.
+    colors[i * 3] = tmp.r * 0.88;
+    colors[i * 3 + 1] = tmp.g * 0.88;
+    colors[i * 3 + 2] = tmp.b * 0.88;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeBoundingSphere();
 
   const mesh = new THREE.Mesh(geo, material);
   mesh.name = 'distant-mountains';
@@ -282,13 +273,15 @@ function buildDistantMountainRing(material: THREE.MeshStandardMaterial): THREE.M
 }
 
 export interface TerrainData {
-  /** Primary drivable 1200x1200m terrain mesh. */
-  mesh: THREE.Mesh;
+  /** Primary drivable 1200x1200m terrain container (16 frustum-cullable seamless tiles). */
+  mesh: THREE.Object3D;
   /** Purely visual outer mountain range ring extending to the horizon (zero physics cost). */
   distantMesh: THREE.Mesh;
-  geometry: THREE.BufferGeometry;
+  /** All owned terrain tile geometries (for disposal). */
+  geometries: THREE.BufferGeometry[];
   distantGeometry: THREE.BufferGeometry;
   material: THREE.MeshStandardMaterial;
+  distantMaterial: THREE.Material;
   /** Number of vertices along X and Z (TERRAIN_SEGMENTS + 1). */
   rows: number;
   cols: number;
@@ -306,64 +299,78 @@ export interface TerrainData {
 }
 
 /**
- * Builds the 1200x1200m sculpted California coastal valley terrain mesh, distant horizon mountain ring,
- * and matching exact physics heightfield grid.
+ * Builds the 1200x1200m sculpted California coastal valley terrain partitioned into 4x4 seamless
+ * frustum-cullable tiles, plus the distant horizon mountain ring and exact physics heightfield grid.
  */
 export function buildTerrain(network: RoadNetwork, textures: WorldTextures): TerrainData {
   const segs = TERRAIN_SEGMENTS;
   const cols = segs + 1;
   const rows = segs + 1;
+  const totalVerts = rows * cols;
+  const cellStep = WORLD_SIZE / segs;
 
-  const geometry = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, segs, segs);
-  geometry.rotateX(-Math.PI / 2);
+  const fullVisualY = new Float32Array(totalVerts);
+  const physicsHeights = new Float32Array(totalVerts);
+  const shoulderWeights = new Float32Array(totalVerts);
 
-  const posAttr = geometry.attributes.position as THREE.BufferAttribute;
-  const uvAttr = geometry.attributes.uv as THREE.BufferAttribute;
-  const physicsHeights = new Float32Array(rows * cols);
-  const shoulderWeights = new Float32Array(posAttr.count);
+  for (let iz = 0; iz < rows; iz++) {
+    const z = -WORLD_HALF + iz * cellStep;
+    const rowOff = iz * cols;
+    for (let ix = 0; ix < cols; ix++) {
+      const x = -WORLD_HALF + ix * cellStep;
+      const idx = rowOff + ix;
 
-  for (let i = 0; i < posAttr.count; i++) {
-    const x = posAttr.getX(i);
-    const z = posAttr.getZ(i);
+      const scenic = baseScenicHeight(x, z);
+      const blend = computeRoadBlend(network, x, z);
 
-    const scenic = baseScenicHeight(x, z);
-    const blend = computeRoadBlend(network, x, z);
+      const physY = lerp(scenic, blend.targetY, blend.flattenWeight);
+      const visualY = physY - blend.depressWeight * blend.depressDepth;
 
-    // Exact surface height for physics (matches roads & flat pads seamlessly).
-    const physY = lerp(scenic, blend.targetY, blend.flattenWeight);
-
-    // Visual terrain dips beneath paved roads & shoulder verges so 7.5m terrain triangles never poke through curved hills.
-    const visualY = physY - blend.depressWeight * blend.depressDepth;
-    posAttr.setY(i, visualY);
-
-    const ix = clamp(Math.round(((x + WORLD_HALF) / WORLD_SIZE) * segs), 0, segs);
-    const iz = clamp(Math.round(((z + WORLD_HALF) / WORLD_SIZE) * segs), 0, segs);
-    physicsHeights[iz * cols + ix] = physY;
-    shoulderWeights[i] = smoothstep(0.32, 0.92, blend.flattenWeight);
-
-    // Tile detail UV every 16 meters (dual-scale shader breaks up repetition).
-    uvAttr.setXY(i, x / 16, z / 16);
+      physicsHeights[idx] = physY;
+      fullVisualY[idx] = visualY;
+      shoulderWeights[idx] = smoothstep(0.32, 0.92, blend.flattenWeight);
+    }
   }
 
-  geometry.computeVertexNormals();
+  // Compute seamless smooth normals across the entire 161x161 grid BEFORE splitting into tiles
+  // so tile edges never show lighting seams.
+  const fullNormals = new Float32Array(totalVerts * 3);
+  const fullColors = new Float32Array(totalVerts * 3);
+  const tmpColor = new THREE.Color();
+  const twoStep = cellStep * 2;
 
-  // Compute rich California coastal biome vertex colors using exact computed surface slopes.
-  const normAttr = geometry.attributes.normal as THREE.BufferAttribute;
-  const colors = new Float32Array(posAttr.count * 3);
-  const tmp = new THREE.Color();
+  for (let iz = 0; iz < rows; iz++) {
+    const z = -WORLD_HALF + iz * cellStep;
+    const zm = Math.max(0, iz - 1);
+    const zp = Math.min(rows - 1, iz + 1);
+    const dzSpan = (zp - zm) * cellStep || twoStep;
+    for (let ix = 0; ix < cols; ix++) {
+      const x = -WORLD_HALF + ix * cellStep;
+      const xm = Math.max(0, ix - 1);
+      const xp = Math.min(cols - 1, ix + 1);
+      const dxSpan = (xp - xm) * cellStep || twoStep;
 
-  for (let i = 0; i < posAttr.count; i++) {
-    const x = posAttr.getX(i);
-    const y = posAttr.getY(i);
-    const z = posAttr.getZ(i);
-    const slope = 1 - clamp(normAttr.getY(i), 0, 1);
+      const idx = iz * cols + ix;
+      const y = fullVisualY[idx];
+      const dhdx = (fullVisualY[iz * cols + xp] - fullVisualY[iz * cols + xm]) / dxSpan;
+      const dhdz = (fullVisualY[zp * cols + ix] - fullVisualY[zm * cols + ix]) / dzSpan;
 
-    evaluateCaliforniaBiomeColor(x, y, z, slope, shoulderWeights[i], tmp);
-    colors[i * 3] = tmp.r;
-    colors[i * 3 + 1] = tmp.g;
-    colors[i * 3 + 2] = tmp.b;
+      const invLen = 1 / Math.hypot(-dhdx, 1, -dhdz);
+      const nx = -dhdx * invLen;
+      const ny = invLen;
+      const nz = -dhdz * invLen;
+
+      fullNormals[idx * 3] = nx;
+      fullNormals[idx * 3 + 1] = ny;
+      fullNormals[idx * 3 + 2] = nz;
+
+      const slope = 1 - clamp(ny, 0, 1);
+      evaluateCaliforniaBiomeColor(x, y, z, slope, shoulderWeights[idx], tmpColor);
+      fullColors[idx * 3] = tmpColor.r;
+      fullColors[idx * 3 + 1] = tmpColor.g;
+      fullColors[idx * 3 + 2] = tmpColor.b;
+    }
   }
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
   const material = new THREE.MeshStandardMaterial({
     name: 'world-terrain',
@@ -377,12 +384,97 @@ export function buildTerrain(network: RoadNetwork, textures: WorldTextures): Ter
   });
   enableDualScaleTerrainMaterial(material);
 
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = 'terrain';
-  mesh.receiveShadow = true;
-  mesh.matrixAutoUpdate = false;
+  // Split visual terrain into 4x4 seamless frustum-cullable tiles (~65% of terrain culled behind camera!).
+  const tileSegs = segs / TERRAIN_TILE_GRID;
+  const tileVertsPerSide = tileSegs + 1;
+  const tileVertCount = tileVertsPerSide * tileVertsPerSide;
 
-  const distantMesh = buildDistantMountainRing(material);
+  // Shared index buffer layout for every 40x40 tile (Uint16 fits 41*41 = 1681 verts easily).
+  const tileIndexTemplate = new Uint16Array(tileSegs * tileSegs * 6);
+  let iPtr = 0;
+  for (let lz = 0; lz < tileSegs; lz++) {
+    for (let lx = 0; lx < tileSegs; lx++) {
+      const a = lz * tileVertsPerSide + lx;
+      const b = a + 1;
+      const c = a + tileVertsPerSide;
+      const d = c + 1;
+      // Verified +Y upward CCW winding: (c - a) x (b - a) = (+Z) x (+X) = +Y.
+      tileIndexTemplate[iPtr++] = a;
+      tileIndexTemplate[iPtr++] = c;
+      tileIndexTemplate[iPtr++] = b;
+      tileIndexTemplate[iPtr++] = b;
+      tileIndexTemplate[iPtr++] = c;
+      tileIndexTemplate[iPtr++] = d;
+    }
+  }
+
+  const terrainGroup = new THREE.Group();
+  terrainGroup.name = 'terrain';
+  terrainGroup.matrixAutoUpdate = false;
+  const geometries: THREE.BufferGeometry[] = [];
+
+  for (let tz = 0; tz < TERRAIN_TILE_GRID; tz++) {
+    for (let tx = 0; tx < TERRAIN_TILE_GRID; tx++) {
+      const positions = new Float32Array(tileVertCount * 3);
+      const normals = new Float32Array(tileVertCount * 3);
+      const uvs = new Float32Array(tileVertCount * 2);
+      const colors = new Float32Array(tileVertCount * 3);
+
+      const startX = tx * tileSegs;
+      const startZ = tz * tileSegs;
+
+      for (let lz = 0; lz < tileVertsPerSide; lz++) {
+        const gz = startZ + lz;
+        const z = -WORLD_HALF + gz * cellStep;
+        for (let lx = 0; lx < tileVertsPerSide; lx++) {
+          const gx = startX + lx;
+          const x = -WORLD_HALF + gx * cellStep;
+
+          const gIdx = gz * cols + gx;
+          const lIdx = lz * tileVertsPerSide + lx;
+
+          positions[lIdx * 3] = x;
+          positions[lIdx * 3 + 1] = fullVisualY[gIdx];
+          positions[lIdx * 3 + 2] = z;
+
+          normals[lIdx * 3] = fullNormals[gIdx * 3];
+          normals[lIdx * 3 + 1] = fullNormals[gIdx * 3 + 1];
+          normals[lIdx * 3 + 2] = fullNormals[gIdx * 3 + 2];
+
+          uvs[lIdx * 2] = x / 16;
+          uvs[lIdx * 2 + 1] = z / 16;
+
+          colors[lIdx * 3] = fullColors[gIdx * 3];
+          colors[lIdx * 3 + 1] = fullColors[gIdx * 3 + 1];
+          colors[lIdx * 3 + 2] = fullColors[gIdx * 3 + 2];
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geo.setIndex(new THREE.BufferAttribute(tileIndexTemplate, 1));
+      geo.computeBoundingBox();
+      geo.computeBoundingSphere();
+      geometries.push(geo);
+
+      const tileMesh = new THREE.Mesh(geo, material);
+      tileMesh.name = `terrain-tile-${tx}-${tz}`;
+      tileMesh.castShadow = false;
+      tileMesh.receiveShadow = true;
+      tileMesh.matrixAutoUpdate = false;
+      terrainGroup.add(tileMesh);
+    }
+  }
+
+  // Lightweight non-shadowed Lambert material for distant horizon mountains in aerial perspective fog.
+  const distantMaterial = new THREE.MeshLambertMaterial({
+    name: 'world-distant-mountains',
+    vertexColors: true,
+  });
+  const distantMesh = buildDistantMountainRing(distantMaterial);
 
   const sampleHeight = (x: number, z: number): number => {
     const u = clamp((x + WORLD_HALF) / WORLD_SIZE, 0, 1) * segs;
@@ -399,11 +491,12 @@ export function buildTerrain(network: RoadNetwork, textures: WorldTextures): Ter
   };
 
   return {
-    mesh,
+    mesh: terrainGroup,
     distantMesh,
-    geometry,
+    geometries,
     distantGeometry: distantMesh.geometry,
     material,
+    distantMaterial,
     rows,
     cols,
     sizeX: WORLD_SIZE,

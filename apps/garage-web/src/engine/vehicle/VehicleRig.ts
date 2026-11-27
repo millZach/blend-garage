@@ -16,6 +16,8 @@ const SUSPENSION_DROOP = 0.065;
 const FLASH_SECONDS = 0.75;
 /** Above this vertex count, avoid O(N) full-mesh normal/bounds recomputations on every impact frame. */
 const HIGH_POLY_VERTEX_THRESHOLD = 85_000;
+/** Above this vertex count, omit normal-buffer perturbation/re-upload on crash impacts to prevent 60MB GPU stalls. */
+const MEGA_POLY_NORMAL_SKIP_THRESHOLD = 250_000;
 
 export interface WheelDriveSpec {
   corner: WheelCorner;
@@ -109,10 +111,15 @@ export class VehicleRig {
   private readonly body = new THREE.Group();
   private readonly partGroups = new Map<string, THREE.Group>();
   private readonly wheels: WheelRig[] = [];
+  private readonly wheelByCorner = new Map<WheelCorner, WheelRig>();
   private readonly deformables: Deformable[] = [];
   private readonly restPositions = new Map<string, Float32Array>();
   private readonly restNormals = new Map<string, Float32Array>();
   private readonly paddedBounds = new Set<string>();
+  private readonly savedCastShadow = new Map<THREE.Mesh, boolean>();
+  private driveShadowProxy: THREE.Group | null = null;
+  private driveContactTexture: THREE.CanvasTexture | null = null;
+  private driveShadowMode = false;
   private readonly aeroMaterials: AeroMaterials;
   private readonly faceMaterials: WheelFaceMaterials;
   private readonly aeroContext: AeroContext;
@@ -260,7 +267,10 @@ export class VehicleRig {
         triangles += result.triangles;
         for (const mesh of result.meshes) {
           parent.add(mesh);
-          if (deformable) rig.deformables.push({ id: `${name}/${(mesh.material as THREE.Material).name}`, mesh, partId });
+          if (deformable) {
+            const uniqueId = `${name}/${rig.deformables.length}:${(mesh.material as THREE.Material).name}`;
+            rig.deformables.push({ id: uniqueId, mesh, partId });
+          }
         }
         done += group.length;
         if (performance.now() - lastYield > 14) {
@@ -302,7 +312,9 @@ export class VehicleRig {
       steer.add(camber);
       camber.add(spin);
       rig.root.add(hub);
-      rig.wheels.push({ fit, hub, steer, camber, spin, face: null });
+      const wheelRig: WheelRig = { fit, hub, steer, camber, spin, face: null };
+      rig.wheels.push(wheelRig);
+      rig.wheelByCorner.set(fit.corner, wheelRig);
       const toSpin = new THREE.Matrix4().makeTranslation(-fit.center.x, -fit.center.y, -fit.center.z);
       const toHub = new THREE.Matrix4().makeTranslation(-fit.center.x, 0, -fit.center.z);
       if (!(await merge(fit.spin, toSpin, `wheel ${fit.corner}`, spin, null, false, false))) return stop();
@@ -481,8 +493,9 @@ export class VehicleRig {
   setWheelDriveState(states: readonly WheelDriveState[]): void {
     const camberDeg = this.applied?.stance.camberDeg ?? 0;
     const trackOffset = this.applied?.stance.trackOffset ?? 0;
-    for (const state of states) {
-      const wheel = this.wheels.find((w) => w.fit.corner === state.corner);
+    for (let i = 0; i < states.length; i++) {
+      const state = states[i];
+      const wheel = this.wheelByCorner.get(state.corner);
       if (!wheel) continue;
       const wobble = state.wobbleRad ?? 0;
       wheel.hub.position.x = wheel.fit.center.x + wheel.fit.side * trackOffset;
@@ -490,6 +503,34 @@ export class VehicleRig {
       wheel.steer.rotation.y = (wheel.fit.front ? state.steerRad : 0) + wobble * 0.55;
       wheel.camber.rotation.z = -wheel.fit.side * camberDeg * DEG + wobble;
       wheel.spin.rotation.x = state.spinRad;
+    }
+    this.shadowDirty = true;
+  }
+
+  /**
+   * Switches between full-detail shop shadow casting and a lightweight (~200-triangle) Drive Mode
+   * shadow proxy + grounded contact-shadow blob. Eliminates rasterizing 700k–10M car triangles into
+   * the dynamic shadow map every frame while keeping crisp car shadows on open-world asphalt.
+   */
+  setDriveShadowMode(enabled: boolean): void {
+    if (enabled === this.driveShadowMode) return;
+    this.driveShadowMode = enabled;
+
+    if (enabled) {
+      if (!this.driveShadowProxy) this.buildDriveShadowProxy();
+      this.savedCastShadow.clear();
+      this.root.traverse((obj) => {
+        if (obj === this.driveShadowProxy || (this.driveShadowProxy && obj.parent === this.driveShadowProxy)) return;
+        if (obj instanceof THREE.Mesh && obj.castShadow) {
+          this.savedCastShadow.set(obj, true);
+          obj.castShadow = false;
+        }
+      });
+      if (this.driveShadowProxy) this.driveShadowProxy.visible = true;
+    } else {
+      for (const [mesh, wasCasting] of this.savedCastShadow) mesh.castShadow = wasCasting;
+      this.savedCastShadow.clear();
+      if (this.driveShadowProxy) this.driveShadowProxy.visible = false;
     }
     this.shadowDirty = true;
   }
@@ -514,14 +555,20 @@ export class VehicleRig {
       const restPos = this.restPositions.get(id);
       if (restPos) {
         const posAttr = mesh.geometry.attributes.position as THREE.BufferAttribute;
-        (posAttr.array as Float32Array).set(restPos);
-        posAttr.needsUpdate = true;
+        const posArr = posAttr.array as Float32Array;
+        if (posArr.length === restPos.length) {
+          posArr.set(restPos);
+          posAttr.needsUpdate = true;
+        }
       }
       const restNorm = this.restNormals.get(id);
       if (restNorm && mesh.geometry.attributes.normal) {
         const normAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute;
-        (normAttr.array as Float32Array).set(restNorm);
-        normAttr.needsUpdate = true;
+        const normArr = normAttr.array as Float32Array;
+        if (normArr.length === restNorm.length) {
+          normArr.set(restNorm);
+          normAttr.needsUpdate = true;
+        }
       }
       mesh.visible = true;
     }
@@ -548,6 +595,7 @@ export class VehicleRig {
   /** Exits Drive Mode cleanly: repairs damage and restores shop root transform, stance, and lights. */
   restoreShopPose(): void {
     this.driving = false;
+    this.setDriveShadowMode(false);
     this.resetAllDamage();
     this.root.position.set(0, 0, 0);
     this.root.quaternion.identity();
@@ -566,6 +614,83 @@ export class VehicleRig {
     this.driveLightsOn = this.applied?.lightsOn ?? false;
     this.syncLampVisibility();
     this.shadowDirty = true;
+  }
+
+  private buildDriveShadowProxy(): void {
+    const proxy = new THREE.Group();
+    proxy.name = 'drive-shadow-proxy';
+    proxy.visible = false;
+
+    // Shadow-only material: writes nothing in the main color/depth pass, casts crisp silhouette in the shadow pass.
+    const casterMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+    const cx = (this.bounds.min.x + this.bounds.max.x) * 0.5;
+    const cz = (this.bounds.min.z + this.bounds.max.z) * 0.5;
+    const w = Math.max(1.2, this.size.x);
+    const h = Math.max(0.9, this.size.y);
+    const l = Math.max(3.0, this.size.z);
+
+    const lowerH = h * 0.42;
+    const lowerY = Math.max(0.18, this.bounds.min.y + 0.14) + lowerH * 0.5;
+    const lowerMesh = new THREE.Mesh(new THREE.BoxGeometry(w * 0.88, lowerH, l * 0.92), casterMat);
+    lowerMesh.position.set(cx, lowerY, cz);
+    lowerMesh.castShadow = true;
+    lowerMesh.receiveShadow = false;
+    proxy.add(lowerMesh);
+
+    const cabinH = h * 0.36;
+    const cabinY = lowerY + lowerH * 0.5 + cabinH * 0.42;
+    const cabinMesh = new THREE.Mesh(new THREE.BoxGeometry(w * 0.68, cabinH, l * 0.46), casterMat);
+    cabinMesh.position.set(cx, cabinY, cz - l * 0.05);
+    cabinMesh.castShadow = true;
+    cabinMesh.receiveShadow = false;
+    proxy.add(cabinMesh);
+
+    for (const { fit } of this.wheels) {
+      const wheelGeo = new THREE.CylinderGeometry(fit.radius * 0.95, fit.radius * 0.95, fit.width * 0.9, 10, 1);
+      wheelGeo.rotateZ(Math.PI / 2);
+      const wheelMesh = new THREE.Mesh(wheelGeo, casterMat);
+      wheelMesh.position.copy(fit.center);
+      wheelMesh.castShadow = true;
+      wheelMesh.receiveShadow = false;
+      proxy.add(wheelMesh);
+    }
+
+    // Soft grounded contact shadow right under the chassis for planted outdoor asphalt feel.
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const grad = ctx.createRadialGradient(32, 32, 6, 32, 32, 31);
+      grad.addColorStop(0, 'rgba(0,0,0,0.72)');
+      grad.addColorStop(0.58, 'rgba(0,0,0,0.44)');
+      grad.addColorStop(0.84, 'rgba(0,0,0,0.14)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 64, 64);
+    }
+    const contactTex = new THREE.CanvasTexture(canvas);
+    this.driveContactTexture = contactTex;
+    const contactMat = new THREE.MeshBasicMaterial({
+      map: contactTex,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    const contactGeo = new THREE.PlaneGeometry(w + 0.55, l + 0.55);
+    contactGeo.rotateX(-Math.PI / 2);
+    const contactMesh = new THREE.Mesh(contactGeo, contactMat);
+    contactMesh.position.set(cx, 0.028, cz);
+    contactMesh.renderOrder = 2;
+    contactMesh.castShadow = false;
+    contactMesh.receiveShadow = false;
+    proxy.add(contactMesh);
+
+    this.driveShadowProxy = proxy;
+    this.root.add(proxy);
   }
 
   private syncLampVisibility(): void {
@@ -595,20 +720,50 @@ export class VehicleRig {
    * result is shown after `applyDamageResult`. Coordinates are meters in the car frame.
    */
   extractDeformableMeshes(): DeformableMeshPayload[] {
-    return this.deformables.map(({ id, mesh }) => {
-      const positions = mesh.geometry.attributes.position.array as Float32Array;
+    const cabinMinX = -this.size.x * 0.34;
+    const cabinMaxX = this.size.x * 0.34;
+    const cabinMinY = this.bounds.min.y + this.size.y * 0.24;
+    const cabinMaxY = this.bounds.min.y + this.size.y * 0.80;
+    const cabinMinZ = -this.size.z * 0.22;
+    const cabinMaxZ = this.size.z * 0.16;
+
+    const payloads: DeformableMeshPayload[] = [];
+    for (const { id, mesh, partId } of this.deformables) {
+      // Skip non-part interior meshes sitting strictly inside the rigid cabin safety cell.
+      const box = mesh.geometry.boundingBox;
+      if (
+        !partId &&
+        box &&
+        box.min.x >= cabinMinX &&
+        box.max.x <= cabinMaxX &&
+        box.min.y >= cabinMinY &&
+        box.max.y <= cabinMaxY &&
+        box.min.z >= cabinMinZ &&
+        box.max.z <= cabinMaxZ
+      ) {
+        continue;
+      }
+
+      const posAttr = mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const positions = posAttr.array as Float32Array;
       let restPositions = this.restPositions.get(id);
       if (!restPositions) {
         restPositions = positions.slice();
         this.restPositions.set(id, restPositions);
       }
-      const normalAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
-      const normals = normalAttr ? (normalAttr.array as Float32Array) : undefined;
-      if (normals && !this.restNormals.has(id)) {
-        this.restNormals.set(id, normals.slice());
+
+      // Skip normal mutation/re-upload on mega-poly (>250k vert) meshes to keep crash frames smooth.
+      let normals: Float32Array | undefined;
+      if (posAttr.count <= MEGA_POLY_NORMAL_SKIP_THRESHOLD) {
+        const normalAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
+        normals = normalAttr ? (normalAttr.array as Float32Array) : undefined;
+        if (normals && !this.restNormals.has(id)) {
+          this.restNormals.set(id, normals.slice());
+        }
       }
-      return { partId: id, restPositions, positions, normals };
-    });
+      payloads.push({ partId: id, restPositions, positions, normals });
+    }
+    return payloads;
   }
 
   /** Shows what a simulator step changed: re-uploads deformed meshes and removes detached panels. */
@@ -621,8 +776,10 @@ export class VehicleRig {
         posAttr.needsUpdate = true;
         const normalAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
         if (normalAttr) {
-          // RealDamageSimulator perturbs/restores normals in-place in O(k); just re-upload to GPU.
-          normalAttr.needsUpdate = true;
+          if (posAttr.count <= MEGA_POLY_NORMAL_SKIP_THRESHOLD) {
+            // RealDamageSimulator perturbs/restores normals in-place in O(k); just re-upload to GPU.
+            normalAttr.needsUpdate = true;
+          }
         } else if (posAttr.count <= HIGH_POLY_VERTEX_THRESHOLD) {
           mesh.geometry.computeVertexNormals();
         }
@@ -651,6 +808,22 @@ export class VehicleRig {
     this.lights.dispose();
     for (const key of Object.keys(this.aero) as (keyof VehicleRig['aero'])[]) disposeGroup(this.aero[key]);
     for (const wheel of this.wheels) disposeGroup(wheel.face);
+    if (this.driveShadowProxy) {
+      const proxyMats = new Set<THREE.Material>();
+      this.driveShadowProxy.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.geometry.dispose();
+          if (Array.isArray(o.material)) o.material.forEach((m) => proxyMats.add(m));
+          else proxyMats.add(o.material as THREE.Material);
+        }
+      });
+      proxyMats.forEach((m) => m.dispose());
+      this.driveShadowProxy.removeFromParent();
+      this.driveShadowProxy = null;
+    }
+    this.driveContactTexture?.dispose();
+    this.driveContactTexture = null;
+    this.savedCastShadow.clear();
     this.root.traverse((o) => {
       if (o instanceof THREE.Mesh) o.geometry.dispose();
     });
@@ -660,6 +833,7 @@ export class VehicleRig {
     this.restPositions.clear();
     this.restNormals.clear();
     this.paddedBounds.clear();
+    this.wheelByCorner.clear();
     this.root.removeFromParent();
   }
 

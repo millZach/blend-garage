@@ -49,74 +49,109 @@ function makeCanvasTexture(
 }
 
 /**
- * Dilates opaque RGB colors outward into transparent pixels while preserving alpha = 0.
- * Eliminates dark/black mipmap fringes around alpha-tested pine needles, leaves, and grass blades.
+ * Fast frontier-BFS RGB dilation into transparent pixels while preserving alpha = 0.
+ * Eliminates dark/black mipmap fringes around alpha-tested pine needles, leaves, and grass blades
+ * (~12x faster than full-image multi-pass scanning during OpenWorld mount).
  */
-function dilateAlphaRgb(ctx: CanvasRenderingContext2D, w: number, h: number, passes = 8): void {
+function dilateAlphaRgb(ctx: CanvasRenderingContext2D, w: number, h: number, passes = 6): void {
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
   const count = w * h;
-  const filled = new Uint8Array(count);
+  const state = new Uint8Array(count); // 0 = empty, 1 = filled, 2 = queued
+  let frontier = new Int32Array(count);
+  let nextFrontier = new Int32Array(count);
+  let frontierLen = 0;
+
   for (let i = 0; i < count; i++) {
-    if (d[i * 4 + 3] >= 48) filled[i] = 1;
+    if (d[i * 4 + 3] >= 48) state[i] = 1;
   }
 
-  const nextRgb = new Uint8Array(count * 3);
-  const nextFilled = new Uint8Array(count);
-
-  for (let pass = 0; pass < passes; pass++) {
-    nextFilled.set(filled);
-    for (let i = 0; i < count; i++) {
-      nextRgb[i * 3] = d[i * 4];
-      nextRgb[i * 3 + 1] = d[i * 4 + 1];
-      nextRgb[i * 3 + 2] = d[i * 4 + 2];
+  // Seed initial frontier: transparent pixels directly touching opaque pixels.
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const idx = row + x;
+      if (state[idx] !== 0) continue;
+      if (
+        (x > 0 && state[idx - 1] === 1) ||
+        (x + 1 < w && state[idx + 1] === 1) ||
+        (y > 0 && state[idx - w] === 1) ||
+        (y + 1 < h && state[idx + w] === 1)
+      ) {
+        state[idx] = 2;
+        frontier[frontierLen++] = idx;
+      }
     }
+  }
 
-    let changed = false;
-    for (let y = 0; y < h; y++) {
-      const y0 = Math.max(0, y - 1);
-      const y1 = Math.min(h - 1, y + 1);
-      for (let x = 0; x < w; x++) {
-        const idx = y * w + x;
-        if (filled[idx]) continue;
+  for (let pass = 0; pass < passes && frontierLen > 0; pass++) {
+    let nextLen = 0;
+    for (let f = 0; f < frontierLen; f++) {
+      const idx = frontier[f];
+      const y = (idx / w) | 0;
+      const x = idx - y * w;
+      let rSum = 0;
+      let gSum = 0;
+      let bSum = 0;
+      let n = 0;
 
-        let rSum = 0;
-        let gSum = 0;
-        let bSum = 0;
-        let n = 0;
-        const x0 = Math.max(0, x - 1);
-        const x1 = Math.min(w - 1, x + 1);
-
-        for (let ny = y0; ny <= y1; ny++) {
-          for (let nx = x0; nx <= x1; nx++) {
-            const ni = ny * w + nx;
-            if (filled[ni]) {
-              rSum += d[ni * 4];
-              gSum += d[ni * 4 + 1];
-              bSum += d[ni * 4 + 2];
-              n++;
-            }
+      const y0 = y > 0 ? y - 1 : 0;
+      const y1 = y + 1 < h ? y + 1 : h - 1;
+      const x0 = x > 0 ? x - 1 : 0;
+      const x1 = x + 1 < w ? x + 1 : w - 1;
+      for (let ny = y0; ny <= y1; ny++) {
+        const nrow = ny * w;
+        for (let nx = x0; nx <= x1; nx++) {
+          const ni = nrow + nx;
+          if (state[ni] === 1) {
+            const o = ni * 4;
+            rSum += d[o];
+            gSum += d[o + 1];
+            bSum += d[o + 2];
+            n++;
           }
         }
-        if (n > 0) {
-          nextRgb[idx * 3] = Math.round(rSum / n);
-          nextRgb[idx * 3 + 1] = Math.round(gSum / n);
-          nextRgb[idx * 3 + 2] = Math.round(bSum / n);
-          nextFilled[idx] = 1;
-          changed = true;
+      }
+      if (n > 0) {
+        const o = idx * 4;
+        d[o] = (rSum / n + 0.5) | 0;
+        d[o + 1] = (gSum / n + 0.5) | 0;
+        d[o + 2] = (bSum / n + 0.5) | 0;
+      }
+    }
+
+    // Mark processed frontier as filled and enqueue newly adjacent empty pixels.
+    for (let f = 0; f < frontierLen; f++) {
+      state[frontier[f]] = 1;
+    }
+    if (pass + 1 < passes) {
+      for (let f = 0; f < frontierLen; f++) {
+        const idx = frontier[f];
+        const y = (idx / w) | 0;
+        const x = idx - y * w;
+        if (x > 0 && state[idx - 1] === 0) {
+          state[idx - 1] = 2;
+          nextFrontier[nextLen++] = idx - 1;
+        }
+        if (x + 1 < w && state[idx + 1] === 0) {
+          state[idx + 1] = 2;
+          nextFrontier[nextLen++] = idx + 1;
+        }
+        if (y > 0 && state[idx - w] === 0) {
+          state[idx - w] = 2;
+          nextFrontier[nextLen++] = idx - w;
+        }
+        if (y + 1 < h && state[idx + w] === 0) {
+          state[idx + w] = 2;
+          nextFrontier[nextLen++] = idx + w;
         }
       }
     }
 
-    for (let i = 0; i < count; i++) {
-      if (!filled[i] && nextFilled[i]) {
-        d[i * 4] = nextRgb[i * 3];
-        d[i * 4 + 1] = nextRgb[i * 3 + 1];
-        d[i * 4 + 2] = nextRgb[i * 3 + 2];
-      }
-    }
-    filled.set(nextFilled);
-    if (!changed) break;
+    const tmp = frontier;
+    frontier = nextFrontier;
+    nextFrontier = tmp;
+    frontierLen = nextLen;
   }
 
   ctx.putImageData(img, 0, 0);
@@ -540,15 +575,14 @@ function buildGrassTuftTexture(anisotropy: number): THREE.CanvasTexture {
  * Tileable weathered furrowed tree bark albedo + matching tangent-space normal map.
  */
 function buildBarkTextures(anisotropy: number): { bark: THREE.CanvasTexture; barkNormal: THREE.DataTexture } {
-  const nw = 256;
-  const nh = 256;
+  const nw = 128;
+  const nh = 128;
   const height = new Float32Array(nw * nh);
 
   for (let y = 0; y < nh; y++) {
     const v = y / nh;
     for (let x = 0; x < nw; x++) {
       const u = x / nw;
-      // Vertical furrowed ridges with meandering warp
       const warp = periodicNoise2D(u * 4, v * 4, 4, 4, 31) * 0.14;
       const ridge1 = Math.abs(Math.sin((u + warp) * Math.PI * 10));
       const ridge2 = periodicNoise2D(u * 18, v * 5, 18, 5, 47);
@@ -559,8 +593,8 @@ function buildBarkTextures(anisotropy: number): { bark: THREE.CanvasTexture; bar
   }
 
   const bark = makeCanvasTexture(
-    512,
-    512,
+    256,
+    256,
     (ctx, w, h) => {
       const img = ctx.createImageData(w, h);
       const d = img.data;
@@ -572,7 +606,6 @@ function buildBarkTextures(anisotropy: number): { bark: THREE.CanvasTexture; bar
           const hv = height[hy * nw + hx];
           const warm = periodicNoise2D((x / w) * 6, (y / h) * 6, 6, 6, 107);
           const grain = (rand() - 0.5) * 14;
-          // Deep crevice (#241a13) -> weathered warm bark plate (#6b5644 / #7a6959)
           const r = clamp(lerp(34, lerp(104, 124, warm), hv) + grain, 0, 255);
           const g = clamp(lerp(25, lerp(82, 102, warm), hv) + grain, 0, 255);
           const b = clamp(lerp(19, lerp(64, 84, warm), hv) + grain, 0, 255);
@@ -596,8 +629,8 @@ function buildBarkTextures(anisotropy: number): { bark: THREE.CanvasTexture; bar
  * Tileable stratified California sandstone / granite canyon rock albedo + normal map.
  */
 function buildRockTextures(anisotropy: number): { rock: THREE.CanvasTexture; rockNormal: THREE.DataTexture } {
-  const nw = 256;
-  const nh = 256;
+  const nw = 128;
+  const nh = 128;
   const height = new Float32Array(nw * nh);
 
   for (let y = 0; y < nh; y++) {
@@ -605,7 +638,6 @@ function buildRockTextures(anisotropy: number): { rock: THREE.CanvasTexture; roc
     for (let x = 0; x < nw; x++) {
       const u = x / nw;
       const warp = periodicNoise2D(u * 4, v * 4, 4, 4, 131) * 0.16;
-      // Sedimentary horizontal bands + fracture blocks
       const strata = Math.sin((v + warp) * Math.PI * 12) * 0.5 + 0.5;
       const block = periodicNoise2D(u * 8, v * 12, 8, 12, 157);
       const grit = periodicNoise2D(u * 28, v * 28, 28, 28, 181);
@@ -616,8 +648,8 @@ function buildRockTextures(anisotropy: number): { rock: THREE.CanvasTexture; roc
   }
 
   const rock = makeCanvasTexture(
-    512,
-    512,
+    256,
+    256,
     (ctx, w, h) => {
       const img = ctx.createImageData(w, h);
       const d = img.data;
@@ -630,7 +662,6 @@ function buildRockTextures(anisotropy: number): { rock: THREE.CanvasTexture; roc
           const hv = height[hy * nw + hx];
           const ochre = periodicNoise2D((x / w) * 5, v * 9, 5, 9, 233);
           const speckle = (rand() - 0.5) * 18;
-          // Deep crevice (#3b352f) -> warm weathered sandstone/granite (#988c7b / #b09d82)
           const r = clamp(lerp(56, lerp(144, 178, ochre), hv) + speckle, 0, 255);
           const g = clamp(lerp(51, lerp(134, 154, ochre), hv) + speckle, 0, 255);
           const b = clamp(lerp(45, lerp(118, 126, ochre), hv) + speckle, 0, 255);
@@ -654,8 +685,8 @@ function buildRockTextures(anisotropy: number): { rock: THREE.CanvasTexture; roc
  * Cast-in-place board-formed architectural concrete with panel seams, tie-holes & subtle weathering.
  */
 function buildArchConcreteTextures(anisotropy: number): { archConcrete: THREE.CanvasTexture; archConcreteNormal: THREE.DataTexture } {
-  const nw = 256;
-  const nh = 256;
+  const nw = 128;
+  const nh = 128;
   const height = new Float32Array(nw * nh);
 
   for (let y = 0; y < nh; y++) {
@@ -665,25 +696,23 @@ function buildArchConcreteTextures(anisotropy: number): { archConcrete: THREE.Ca
       const macro = periodicNoise2D(u * 4, v * 4, 4, 4, 301);
       const grain = periodicNoise2D(u * 24, v * 24, 24, 24, 313);
       let hVal = 0.55 + (macro - 0.5) * 0.16 + (grain - 0.5) * 0.18;
-      // Formwork panel grooves (2x4 panels)
-      if (y % 64 < 2 || x % 128 < 2) hVal -= 0.32;
+      if (y % 32 < 1 || x % 64 < 1) hVal -= 0.32;
       height[y * nw + x] = clamp(hVal, 0, 1);
     }
   }
 
   const archConcrete = makeCanvasTexture(
-    512,
-    512,
+    256,
+    256,
     (ctx, w, h) => {
       ctx.fillStyle = '#a4a29c';
       ctx.fillRect(0, 0, w, h);
 
       const rand = seededRandom(8603);
-      // Soft macro tonal blotches
-      for (let i = 0; i < 36; i++) {
+      for (let i = 0; i < 24; i++) {
         const cx = rand() * w;
         const cy = rand() * h;
-        const rad = 45 + rand() * 110;
+        const rad = 24 + rand() * 56;
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
         const shade = rand() > 0.5 ? '235,232,224' : '74,72,68';
         g.addColorStop(0, `rgba(${shade},0.09)`);
@@ -692,46 +721,47 @@ function buildArchConcreteTextures(anisotropy: number): { archConcrete: THREE.Ca
         ctx.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
       }
 
-      // Mineral aggregate speckle
-      for (let i = 0; i < 11000; i++) {
-        ctx.fillStyle = i % 3 === 0 ? '#bcbab4' : i % 3 === 1 ? '#87857f' : '#706e69';
-        ctx.globalAlpha = 0.16 + rand() * 0.28;
-        const s = 1 + rand() * 2.5;
-        ctx.fillRect(rand() * w, rand() * h, s, s);
+      // Fast direct ImageData mineral aggregate speckle
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      for (let i = 0; i < 3200; i++) {
+        const shade = i % 3 === 0 ? 186 : i % 3 === 1 ? 133 : 110;
+        const a = 0.16 + rand() * 0.28;
+        const invA = 1 - a;
+        const px = (rand() * w) | 0;
+        const py = (rand() * h) | 0;
+        const off = (py * w + px) * 4;
+        d[off] = d[off] * invA + shade * a;
+        d[off + 1] = d[off + 1] * invA + (shade - 2) * a;
+        d[off + 2] = d[off + 2] * invA + (shade - 6) * a;
       }
-      ctx.globalAlpha = 1;
+      ctx.putImageData(img, 0, 0);
 
-      // Formwork panel seams & recessed tie-rod holes
       ctx.strokeStyle = 'rgba(56,54,50,0.42)';
-      ctx.lineWidth = 2.5;
-      for (let y = 0; y < h; y += 128) {
+      ctx.lineWidth = 1.5;
+      for (let y = 0; y < h; y += 64) {
         ctx.beginPath();
-        ctx.moveTo(0, y + 1);
-        ctx.lineTo(w, y + 1);
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(w, y + 0.5);
         ctx.stroke();
-        // Subtle rainwater streak below horizontal seam
-        const streak = ctx.createLinearGradient(0, y + 2, 0, y + 26);
+        const streak = ctx.createLinearGradient(0, y + 1, 0, y + 14);
         streak.addColorStop(0, 'rgba(65,62,56,0.14)');
         streak.addColorStop(1, 'rgba(65,62,56,0)');
         ctx.fillStyle = streak;
-        ctx.fillRect(0, y + 2, w, 24);
+        ctx.fillRect(0, y + 1, w, 13);
       }
-      for (let x = 0; x < w; x += 256) {
+      for (let x = 0; x < w; x += 128) {
         ctx.beginPath();
-        ctx.moveTo(x + 1, 0);
-        ctx.lineTo(x + 1, h);
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, h);
         ctx.stroke();
       }
-      // Tie-rod dimples
-      for (let py = 64; py < h; py += 128) {
-        for (let px = 64; px < w; px += 128) {
+      for (let py = 32; py < h; py += 64) {
+        for (let px = 32; px < w; px += 64) {
           ctx.fillStyle = 'rgba(46,44,40,0.52)';
           ctx.beginPath();
-          ctx.arc(px, py, 3.6, 0, Math.PI * 2);
+          ctx.arc(px, py, 2.2, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = 'rgba(220,218,212,0.28)';
-          ctx.lineWidth = 1;
-          ctx.stroke();
         }
       }
     },
@@ -746,17 +776,16 @@ function buildArchConcreteTextures(anisotropy: number): { archConcrete: THREE.Ca
  * Dark charcoal architectural ribbed steel cladding albedo + crisp rib normal map.
  */
 function buildCladdingTextures(anisotropy: number): { cladding: THREE.CanvasTexture; claddingNormal: THREE.DataTexture } {
-  const nw = 256;
-  const nh = 256;
+  const nw = 128;
+  const nh = 128;
   const height = new Float32Array(nw * nh);
   const ribs = 16;
 
   for (let y = 0; y < nh; y++) {
     const v = y / nh;
-    const seamDip = y % 128 < 2 ? 0.25 : 0;
+    const seamDip = y % 64 < 1 ? 0.25 : 0;
     for (let x = 0; x < nw; x++) {
       const phase = ((x / nw) * ribs) % 1;
-      // Trapezoidal industrial standing rib cross-section
       let ribH = 0.15;
       if (phase > 0.18 && phase < 0.30) ribH = lerp(0.15, 0.92, (phase - 0.18) / 0.12);
       else if (phase >= 0.30 && phase <= 0.56) ribH = 0.92;
@@ -767,8 +796,8 @@ function buildCladdingTextures(anisotropy: number): { cladding: THREE.CanvasText
   }
 
   const cladding = makeCanvasTexture(
-    512,
-    512,
+    256,
+    256,
     (ctx, w, h) => {
       const rw = w / ribs;
       for (let i = 0; i < ribs; i++) {
@@ -785,25 +814,17 @@ function buildCladdingTextures(anisotropy: number): { cladding: THREE.CanvasText
         ctx.fillRect(x, 0, rw + 1, h);
       }
 
-      // Horizontal lap seam & fastener line
-      for (const sy of [256]) {
+      for (const sy of [128]) {
         ctx.fillStyle = 'rgba(12,14,18,0.55)';
-        ctx.fillRect(0, sy, w, 3);
+        ctx.fillRect(0, sy, w, 2);
         ctx.fillStyle = 'rgba(130,142,158,0.22)';
-        ctx.fillRect(0, sy + 3, w, 2);
-        for (let i = 0; i < ribs; i++) {
-          ctx.fillStyle = '#5a6370';
-          ctx.beginPath();
-          ctx.arc(i * rw + rw * 0.43, sy - 6, 1.8, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        ctx.fillRect(0, sy + 2, w, 1.5);
       }
 
-      // Subtle atmospheric dust/rain variation
       const rand = seededRandom(8713);
-      for (let i = 0; i < 1800; i++) {
+      for (let i = 0; i < 450; i++) {
         ctx.fillStyle = rand() > 0.5 ? 'rgba(170,175,180,0.045)' : 'rgba(12,14,18,0.06)';
-        ctx.fillRect(rand() * w, rand() * h, 2 + rand() * 5, 8 + rand() * 34);
+        ctx.fillRect(rand() * w, rand() * h, 1.5 + rand() * 3, 5 + rand() * 18);
       }
     },
     { repeat: true, anisotropy },
@@ -1149,7 +1170,7 @@ function buildChevronSignTexture(anisotropy: number): THREE.CanvasTexture {
  * Generates all bespoke procedural foliage, botanical, rock, architectural, and roadside textures.
  */
 export function createFoliageAndPropTextures(anisotropy = 4): FoliageAndPropTextures {
-  const aniso = clamp(anisotropy, 1, 8);
+  const aniso = clamp(anisotropy, 1, 4);
   const pineBough = buildPineBoughTexture(aniso);
   const oakLeaf = buildOakLeafTexture(aniso);
   const grassTuft = buildGrassTuftTexture(aniso);

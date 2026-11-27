@@ -311,15 +311,113 @@ describe('DrivingWorldSim (Rapier3D vehicle physics)', () => {
       sim.dispose();
     }
   });
+
+  it('smoothly interpolates visual poses between fixed substeps and bounds advance() against frame hitches', async () => {
+    const cfg = createVehiclePhysicsConfig(testManifest);
+    const sim = await DrivingWorldSim.create(cfg, flatRoadColliders);
+    try {
+      stepMany(sim, 30, idleInput);
+      // Accelerate so the car has clear displacement per substep
+      stepMany(sim, 60, { throttle: 1, brake: 0, steer: -0.4, handbrake: false });
+
+      const beforeZ = sim.getState().position[2];
+      const beforeSpin = sim.getState().wheels[0].spinAngleRad;
+      sim.step(1 / 60, { throttle: 1, brake: 0, steer: -0.4, handbrake: false });
+
+      const s0 = sim.getInterpolatedState(0);
+      const sMid = sim.getInterpolatedState(0.5);
+      const s1 = sim.getInterpolatedState(1);
+
+      expect(s0.position[2]).toBeCloseTo(beforeZ, 4);
+      expect(s1.position[2]).toBeGreaterThan(s0.position[2] + 0.05);
+      expect(sMid.position[2]).toBeCloseTo((s0.position[2] + s1.position[2]) * 0.5, 4);
+      expect(sMid.wheels[0].spinAngleRad).toBeCloseTo(
+        (beforeSpin + s1.wheels[0].spinAngleRad) * 0.5,
+        4,
+      );
+
+      // Quaternion stays unit-length under slerp
+      const qLen = Math.hypot(...sMid.quaternion);
+      expect(qLen).toBeCloseTo(1, 5);
+
+      // advance() with huge 2.0s hitch must clamp dt & bound substeps (no spiral of death)
+      const adv = sim.advance(2.0, { throttle: 1, brake: 0, steer: 0, handbrake: false }, 1 / 60, 3);
+      expect(adv.substeps).toBeLessThanOrEqual(3);
+      expect(adv.substeps).toBeGreaterThanOrEqual(1);
+      expect(adv.alpha).toBeGreaterThanOrEqual(0);
+      expect(adv.alpha).toBeLessThanOrEqual(1);
+
+      // resetPose snaps prevPose & currPose together so alpha=0 has zero teleport smear
+      sim.resetPose([50, 0.1, -20], 0);
+      expect(sim.getInterpolatedState(0).position[0]).toBeCloseTo(50, 2);
+      expect(sim.getInterpolatedState(0.5).position[0]).toBeCloseTo(50, 2);
+    } finally {
+      sim.dispose();
+    }
+  });
+
+  it('exposes audio-ready telemetry: turboBoost, shiftEvent, slipRatio, wheelLoad, surface, scrapeIntensity, and horn', async () => {
+    const colliders: WorldColliderDef[] = [
+      ...flatRoadColliders,
+      {
+        type: 'box',
+        id: 'guardrail-east',
+        tag: 'guardrail',
+        surface: 'metal',
+        position: [-1.12, 0.8, 30],
+        halfExtents: [0.25, 0.8, 40],
+      },
+    ];
+    const cfg = createVehiclePhysicsConfig(testManifest, { transmission: 'manual' });
+    const sim = await DrivingWorldSim.create(cfg, colliders);
+    try {
+      stepMany(sim, 30, idleInput);
+
+      // Full throttle builds turboBoost and exposes idle/redline RPM + wheelLoad + surface
+      const accel = stepMany(sim, 90, { throttle: 1, brake: 0, steer: 0, handbrake: false, horn: true });
+      expect(accel.state.idleRpm).toBe(cfg.idleRpm);
+      expect(accel.state.redlineRpm).toBe(cfg.maxRpm);
+      expect(accel.state.turboBoost).toBeGreaterThan(0.35);
+      expect(accel.state.wheelLoad).toBeGreaterThan(0.1);
+      expect(accel.state.surface).toBe('asphalt');
+      expect(accel.state.horn).toBe(true);
+
+      // Edge-triggered manual shift events ('up' then null then 'down')
+      const up = sim.step(1 / 60, { throttle: 1, brake: 0, steer: 0, handbrake: false, shift: 1 });
+      expect(up.state.shiftEvent).toBe('up');
+      const hold = sim.step(1 / 60, { throttle: 1, brake: 0, steer: 0, handbrake: false });
+      expect(hold.state.shiftEvent).toBeNull();
+      const down = sim.step(1 / 60, { throttle: 0, brake: 0, steer: 0, handbrake: false, shift: -1 });
+      expect(down.state.shiftEvent).toBe('down');
+
+      // Handbrake drift spikes top-level slipRatio
+      const drift = stepMany(sim, 8, { throttle: 0.4, brake: 0, steer: -0.7, handbrake: true });
+      expect(drift.state.slipRatio).toBeGreaterThan(0.7);
+
+      // Sliding along a guardrail wall produces continuous non-zero scrapeIntensity
+      sim.resetPose([-0.05, 0.08, 0], 0);
+      stepMany(sim, 15, idleInput);
+      let maxScrape = 0;
+      for (let i = 0; i < 120; i++) {
+        const res = sim.step(1 / 60, { throttle: 0.9, brake: 0, steer: 0.35, handbrake: false });
+        if (res.state.scrapeIntensity > maxScrape) maxScrape = res.state.scrapeIntensity;
+      }
+      expect(maxScrape).toBeGreaterThan(0.1);
+    } finally {
+      sim.dispose();
+    }
+  });
 });
 
 describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
-  it('maps keyboard driving controls and edge-triggered actions cleanly', () => {
+  it('maps keyboard driving controls, horn (H), headlights (L), and edge-triggered actions cleanly', () => {
     const ctrl = new DriveInputController({ getGamepads: () => [] });
 
     ctrl.setKeyState('KeyW', true);
     ctrl.setKeyState('KeyA', true);
     ctrl.setKeyState('Space', true);
+    ctrl.setKeyState('KeyH', true);
+    ctrl.setKeyState('KeyL', true);
     ctrl.setKeyState('KeyR', true);
     ctrl.setKeyState('KeyC', true);
     ctrl.setKeyState('KeyE', true);
@@ -329,26 +427,32 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     expect(f1.control.throttle).toBe(1);
     expect(f1.control.steer).toBeLessThan(0);
     expect(f1.control.handbrake).toBe(true);
+    expect(f1.control.horn).toBe(true);
     expect(f1.control.shift).toBe(1);
     expect(f1.actions.repair).toBe(true);
     expect(f1.actions.cycleCamera).toBe(true);
+    expect(f1.actions.toggleHeadlights).toBe(true);
     expect(f1.actions.reset).toBe(false);
 
-    // Holding the same keys on next frame should NOT re-fire edge-triggered actions
+    // Holding the same keys on next frame keeps horn active but does NOT re-fire edge-triggered actions
     const f2 = ctrl.poll(0.1);
     expect(f2.actions.repair).toBe(false);
     expect(f2.actions.cycleCamera).toBe(false);
+    expect(f2.actions.toggleHeadlights).toBe(false);
     expect(f2.control.shift).toBe(0);
     expect(f2.control.throttle).toBe(1);
+    expect(f2.control.horn).toBe(true);
 
+    ctrl.setKeyState('KeyH', false);
     ctrl.setKeyState('KeyT', true);
     ctrl.setKeyState('Escape', true);
     const f3 = ctrl.poll(0.1);
+    expect(f3.control.horn).toBe(false);
     expect(f3.actions.reset).toBe(true);
     expect(f3.actions.exitDrive).toBe(true);
   });
 
-  it('maps W3C Gamepad axes with deadzone/curve, analog triggers, buttons, source tracking, and rumble', () => {
+  it('maps W3C Gamepad axes with deadzone/curve, analog triggers, buttons, horn (R3), source tracking, and rumble', () => {
     const playEffect = vi.fn();
     let activePad: GamepadLike | null = {
       id: 'Xbox Wireless Controller (STANDARD GAMEPAD)',
@@ -369,14 +473,16 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     expect(f0.gamepadConnected).toBe(true);
     expect(f0.gamepadName).toContain('Xbox');
     expect(f0.control.steer).toBe(0);
+    expect(f0.control.horn).toBe(false);
 
-    // Analog throttle RT (7), steering right (0.6), handbrake A (0), Y camera (3), RB shift up (5), Back repair (8)
+    // Analog throttle RT (7), steering right (0.6), handbrake A (0), Y camera (3), RB shift up (5), Back repair (8), R3 horn (11)
     const buttons = Array.from({ length: 16 }, () => ({ pressed: false, value: 0 }));
     buttons[0] = { pressed: true, value: 1 };
     buttons[3] = { pressed: true, value: 1 };
     buttons[5] = { pressed: true, value: 1 };
     buttons[7] = { pressed: true, value: 0.75 };
     buttons[8] = { pressed: true, value: 1 };
+    buttons[11] = { pressed: true, value: 1 };
 
     activePad = {
       ...activePad,
@@ -390,6 +496,7 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     expect(f1.control.steer).toBeGreaterThan(0.35);
     expect(f1.control.steer).toBeLessThan(0.6); // non-linear curve softens mid-stick
     expect(f1.control.handbrake).toBe(true);
+    expect(f1.control.horn).toBe(true);
     expect(f1.control.shift).toBe(1);
     expect(f1.actions.cycleCamera).toBe(true);
     expect(f1.actions.repair).toBe(true);
@@ -399,6 +506,7 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     expect(f2.actions.cycleCamera).toBe(false);
     expect(f2.actions.repair).toBe(false);
     expect(f2.control.shift).toBe(0);
+    expect(f2.control.horn).toBe(true);
 
     // Rumble triggers dual-rumble effect
     ctrl.triggerRumble(0.8, 180);

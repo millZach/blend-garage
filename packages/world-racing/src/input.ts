@@ -71,10 +71,10 @@ export class DriveInputController {
 
   constructor(options: DriveInputOptions = {}) {
     this.stickDeadzone = clamp(options.stickDeadzone ?? 0.12, 0, 0.45);
-    this.steerExponent = clamp(options.steerExponent ?? 1.55, 1, 3);
+    this.steerExponent = clamp(options.steerExponent ?? 1.45, 1, 3);
     this.triggerDeadzone = clamp(options.triggerDeadzone ?? 0.05, 0, 0.3);
-    this.keyboardSteerRate = options.keyboardSteerRate ?? 5.5;
-    this.keyboardSteerReturnRate = options.keyboardSteerReturnRate ?? 7.5;
+    this.keyboardSteerRate = options.keyboardSteerRate ?? 8.5;
+    this.keyboardSteerReturnRate = options.keyboardSteerReturnRate ?? 11.5;
     this.getGamepadsFn =
       options.getGamepads
       ?? (() => {
@@ -195,12 +195,13 @@ export class DriveInputController {
     const kbLeft = this.isAnyKeyDown('KeyA', 'ArrowLeft');
     const kbRight = this.isAnyKeyDown('KeyD', 'ArrowRight');
     const kbHandbrake = this.pressedKeys.has('Space');
+    const kbHorn = this.pressedKeys.has('KeyH');
 
     const kbSteerTarget = (kbRight ? 1 : 0) - (kbLeft ? 1 : 0);
     if (kbSteerTarget !== 0) {
-      // Smoothly ramp keyboard steering for natural feel without jerky snaps
+      // Smoothly ramp keyboard steering for crisp, responsive turn-in without jerky snaps
       const rate = Math.sign(kbSteerTarget) !== Math.sign(this.keyboardSteer) && this.keyboardSteer !== 0
-        ? this.keyboardSteerReturnRate * 1.4
+        ? this.keyboardSteerReturnRate * 1.45
         : this.keyboardSteerRate;
       this.keyboardSteer = clamp(this.keyboardSteer + kbSteerTarget * rate * dt, -1, 1);
     } else if (Math.abs(this.keyboardSteer) > 1e-4) {
@@ -211,7 +212,7 @@ export class DriveInputController {
           : this.keyboardSteer - Math.sign(this.keyboardSteer) * drop;
     }
 
-    const kbActive = kbThrottle > 0 || kbBrake > 0 || kbLeft || kbRight || kbHandbrake;
+    const kbActive = kbThrottle > 0 || kbBrake > 0 || kbLeft || kbRight || kbHandbrake || kbHorn;
     if (kbActive) {
       this.activeSource = 'keyboard';
     }
@@ -221,6 +222,7 @@ export class DriveInputController {
     let gpBrake = 0;
     let gpSteer = 0;
     let gpHandbrake = false;
+    let gpHorn = false;
 
     const pad = this.findActiveGamepad();
     if (pad) {
@@ -238,6 +240,8 @@ export class DriveInputController {
       gpHandbrake = Boolean(
         pad.buttons[0]?.pressed || pad.buttons[1]?.pressed || pad.buttons[2]?.pressed,
       );
+      // R3 (right stick click, button 11) -> hold horn
+      gpHorn = Boolean(pad.buttons[11]?.pressed);
 
       // Edge-triggered gamepad buttons
       const wasPressed = (idx: number) => Boolean(this.prevGamepadButtons[idx]);
@@ -276,6 +280,7 @@ export class DriveInputController {
     const brake = Math.max(kbBrake, gpBrake);
     const steer = Math.abs(gpSteer) >= Math.abs(this.keyboardSteer) ? gpSteer : this.keyboardSteer;
     const handbrake = kbHandbrake || gpHandbrake;
+    const horn = kbHorn || gpHorn;
 
     const control: VehicleControlInput = {
       throttle,
@@ -283,6 +288,7 @@ export class DriveInputController {
       steer,
       handbrake,
       shift,
+      horn,
     };
 
     return {
@@ -323,7 +329,7 @@ export class DriveInputController {
       case 'KeyC':
         this.pendingActions.cycleCamera = true;
         break;
-      case 'KeyH':
+      case 'KeyL':
         this.pendingActions.toggleHeadlights = true;
         break;
       case 'Escape':
