@@ -77,11 +77,11 @@ export class OpenWorld {
     const maxAniso = renderer.capabilities.getMaxAnisotropy();
     this.textures = createWorldTextures(maxAniso);
 
-    // 1. Sculpted terrain + matching physics height grid.
+    // 1. Sculpted terrain + distant mountain range + matching physics height grid.
     this.terrain = buildTerrain(this.roadNetwork, this.textures);
-    this.ownedGeometries.push(this.terrain.geometry);
+    this.ownedGeometries.push(this.terrain.geometry, this.terrain.distantGeometry);
     this.ownedMaterials.push(this.terrain.material);
-    this.group.add(this.terrain.mesh);
+    this.group.add(this.terrain.mesh, this.terrain.distantMesh);
 
     // 2. Road ribbons, Spawn Plaza, Proving Grounds apron & markings.
     const roads = buildRoadVisuals(this.roadNetwork, this.textures);
@@ -117,7 +117,7 @@ export class OpenWorld {
     if (!this.mounted || this.disposed) return;
 
     const pos = toVec3Like(carWorldPose.position);
-    this.environment?.update(pos.x, pos.y, pos.z);
+    this.environment?.update(pos.x, pos.y, pos.z, dt);
 
     if (this.fx) {
       if (fxInputs?.hoodWorldPos && typeof fxInputs.engineHealth === 'number') {

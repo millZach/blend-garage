@@ -151,7 +151,7 @@ const ROAD_SPECS: readonly RoadControlSpec[] = [
       [160, 0, 264],
     ],
   },
-  // 5. Winding Hillside / Canyon Pass — sweeping S-curves climbing up to +16m elevation and joining the Highway Loop.
+  // 5. Winding Hillside / Canyon Pass — sweeping S-curves climbing up to +15m elevation and joining the Highway Loop.
   {
     id: 'canyon-pass',
     kind: 'canyon',
@@ -163,10 +163,11 @@ const ROAD_SPECS: readonly RoadControlSpec[] = [
       [-105, 1.2, 8],
       [-165, 5.0, -32],
       [-235, 10.5, -18],
-      [-290, 15.2, -78],
-      [-235, 16.0, -155],
-      [-275, 11.2, -215],
-      [-260, 5.2, -248],
+      [-290, 14.8, -78],
+      [-235, 14.0, -145],
+      [-255, 7.2, -196],
+      [-259, 5.22, -226],
+      [-260, 5.2, -246],
     ],
   },
   // 6. Canyon South Spur linking the Canyon Pass down to the West Highway sweep.
@@ -193,7 +194,7 @@ function sampleRoadSpline(spec: RoadControlSpec): RoadDefinition {
 
   const rawPoints: THREE.Vector3[] = [];
   for (let i = 0; i < (spec.closed ? count : count + 1); i++) {
-    const u = spec.closed ? i / count : i / count;
+    const u = i / count;
     rawPoints.push(curve.getPointAt(u));
   }
 
@@ -214,7 +215,6 @@ function sampleRoadSpline(spec: RoadControlSpec): RoadDefinition {
     const tz = dz / len;
     const heading = Math.atan2(tx, tz);
 
-    // Subtle curvature-based banking on canyon turns (kept gentle <= 3.5 deg for predictable physics).
     let bankRad = 0;
     if (spec.kind === 'canyon' && i > 1 && i < n - 2) {
       const a = rawPoints[i - 1];
@@ -225,7 +225,7 @@ function sampleRoadSpline(spec: RoadControlSpec): RoadDefinition {
       const v2z = b.z - curr.z;
       const cross = v1x * v2z - v1z * v2x;
       const denom = (Math.hypot(v1x, v1z) * Math.hypot(v2x, v2z) + 1e-4) * spec.spacing;
-      bankRad = clamp(cross / denom * 0.45, -0.055, 0.055);
+      bankRad = clamp((cross / denom) * 0.45, -0.055, 0.055);
     }
 
     samples.push({
@@ -285,7 +285,6 @@ export class RoadNetwork {
       this.buckets[gz * this.gridDim + gx].push(sample);
     }
 
-    // Compute exact canyon spawn on the uphill curve.
     const canyonRoad = this.roads.find((r) => r.id === 'canyon-pass')!;
     const canyonSample = canyonRoad.samples[Math.floor(canyonRoad.samples.length * 0.25)];
 
@@ -320,6 +319,7 @@ export class RoadNetwork {
   /** Queries distance to the nearest road or paved pad, plus the exact road surface elevation. */
   query(x: number, z: number): RoadQueryResult {
     let bestDist = Infinity;
+    let bestCenterDist = Infinity;
     let bestY = 0;
     let bestHalfWidth = 0;
     let bestSample: RoadSample | null = null;
@@ -340,7 +340,6 @@ export class RoadNetwork {
     const gx = clamp(Math.floor((x - this.gridOrigin) / this.cellSize), 0, this.gridDim - 1);
     const gz = clamp(Math.floor((z - this.gridOrigin) / this.cellSize), 0, this.gridDim - 1);
 
-    // Search a 5x5 cell window (~60m radius) for nearby road splines.
     for (let dz = -2; dz <= 2; dz++) {
       const iz = gz + dz;
       if (iz < 0 || iz >= this.gridDim) continue;
@@ -352,8 +351,13 @@ export class RoadNetwork {
           const s = bucket[i];
           const centerDist = Math.hypot(x - s.x, z - s.z);
           const edgeDist = Math.max(0, centerDist - s.halfWidth);
-          if (edgeDist < bestDist || (edgeDist === 0 && bestSample === null)) {
+          // Break edgeDist ties (especially edgeDist === 0 inside the road!) by true closest centerline sample.
+          if (
+            edgeDist < bestDist - 1e-6 ||
+            (Math.abs(edgeDist - bestDist) <= 1e-6 && centerDist < bestCenterDist)
+          ) {
             bestDist = edgeDist;
+            bestCenterDist = centerDist;
             bestY = s.y;
             bestHalfWidth = s.halfWidth;
             bestSample = s;
@@ -374,7 +378,6 @@ export class RoadNetwork {
 
   /** Returns the nearest clean asphalt pose aligned with the road tangent (for Reset-to-Road). */
   nearestRoadPose(x: number, z: number): WorldSpawnPose {
-    // If already inside the Garage Plaza or Proving Grounds, reset upright on clean tarmac nearby.
     for (const pad of FLAT_PADS) {
       if (x >= pad.minX + 4 && x <= pad.maxX - 4 && z >= pad.minZ + 4 && z <= pad.maxZ - 4) {
         if (pad.id === 'garage-plaza') {
@@ -415,19 +418,23 @@ export class RoadNetwork {
 }
 
 /**
- * Builds a single road ribbon BufferGeometry with tucked side skirts so edges seal cleanly into terrain.
+ * Builds a 6-vertex cross-section road ribbon with asphalt crown, weathered gravel shoulder,
+ * and a softly graded earth verge dipping cleanly into the terrain so roads never look pasted on.
  */
 function buildRoadRibbonGeometry(road: RoadDefinition, tileMeters: number, yOffset: number): THREE.BufferGeometry {
   const samples = road.samples;
   const n = samples.length;
   const ringCount = road.closed ? n + 1 : n;
-  const vertsPerRing = 4; // outerLeft, edgeLeft, edgeRight, outerRight
+  const vertsPerRing = 6; // vergeL, shoulderL, edgeL, edgeR, shoulderR, vergeR
 
   const positions = new Float32Array(ringCount * vertsPerRing * 3);
   const normals = new Float32Array(ringCount * vertsPerRing * 3);
   const uvs = new Float32Array(ringCount * vertsPerRing * 2);
 
   let distAccum = 0;
+  const isHighway = road.kind === 'highway';
+  const asphaltEdgeU = isHighway ? 0.115 : 0.13;
+
   for (let i = 0; i < ringCount; i++) {
     const s = samples[i % n];
     if (i > 0) {
@@ -439,15 +446,18 @@ function buildRoadRibbonGeometry(road: RoadDefinition, tileMeters: number, yOffs
     const lx = s.tz;
     const lz = -s.tx;
     const hw = s.halfWidth;
-    const skirtW = hw + 1.5;
+    const shW = hw + (isHighway ? 1.35 : 1.15);
+    const vergeW = shW + (isHighway ? 2.6 : 2.8);
     const y = s.y + yOffset;
     const vCoord = distAccum / tileMeters;
 
     const ringOffsets: readonly [number, number, number][] = [
-      [skirtW, y - 0.42, 0.0],
-      [hw, y, 0.075],
-      [-hw, y, 0.925],
-      [-skirtW, y - 0.42, 1.0],
+      [vergeW, y - 0.75, 0.0],
+      [shW, y - 0.06, asphaltEdgeU * 0.45],
+      [hw, y, asphaltEdgeU],
+      [-hw, y, 1 - asphaltEdgeU],
+      [-shW, y - 0.06, 1 - asphaltEdgeU * 0.45],
+      [-vergeW, y - 0.75, 1.0],
     ];
 
     for (let k = 0; k < vertsPerRing; k++) {
@@ -475,7 +485,6 @@ function buildRoadRibbonGeometry(road: RoadDefinition, tileMeters: number, yOffs
       const b = i * vertsPerRing + k + 1;
       const c = (i + 1) * vertsPerRing + k;
       const d = (i + 1) * vertsPerRing + k + 1;
-      // Verified CCW upward winding: (a, b, c) and (b, d, c).
       indices[ptr++] = a;
       indices[ptr++] = b;
       indices[ptr++] = c;
@@ -494,6 +503,28 @@ function buildRoadRibbonGeometry(road: RoadDefinition, tileMeters: number, yOffs
   return geo;
 }
 
+/** Adds a weathered chamfered concrete curb run along X or Z into the MeshBatcher. */
+function addCurbRun(
+  batcher: MeshBatcher,
+  material: THREE.Material,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+): void {
+  const len = Math.hypot(x1 - x0, z1 - z0);
+  if (len < 0.5) return;
+  const cx = (x0 + x1) * 0.5;
+  const cz = (z0 + z1) * 0.5;
+  const yaw = Math.atan2(x1 - x0, z1 - z0);
+
+  // Two-step chamfered curb profile (wide gutter base + tapered concrete cap).
+  batcher.at(cx, 0, cz, yaw, () => {
+    batcher.slab(material, 0.52, 0.08, len, 0, -0.02, 0);
+    batcher.slab(material, 0.34, 0.14, len, 0, 0.06, 0);
+  });
+}
+
 export interface RoadVisuals {
   group: THREE.Group;
   geometries: THREE.BufferGeometry[];
@@ -501,7 +532,8 @@ export interface RoadVisuals {
 }
 
 /**
- * Builds all road ribbons, plaza tarmac, proving grounds apron, and painted runway markings.
+ * Builds all road ribbons, plaza tarmac, proving grounds concrete apron, chamfered concrete curbs,
+ * weathered painted lane markings, and stenciled crash-test runway distance markers.
  */
 export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures): RoadVisuals {
   const group = new THREE.Group();
@@ -512,46 +544,64 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
   const highwayMat = new THREE.MeshStandardMaterial({
     name: 'highway-asphalt',
     map: textures.highwayRoad,
+    roughnessMap: textures.highwayRough,
     normalMap: textures.asphaltNormal,
-    normalScale: new THREE.Vector2(0.35, 0.35),
-    roughness: 0.84,
-    metalness: 0.04,
+    normalScale: new THREE.Vector2(0.55, 0.55),
+    roughness: 1.0,
+    metalness: 0.03,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
+
   const canyonMat = new THREE.MeshStandardMaterial({
     name: 'canyon-asphalt',
     map: textures.canyonRoad,
+    roughnessMap: textures.canyonRough,
     normalMap: textures.asphaltNormal,
-    normalScale: new THREE.Vector2(0.4, 0.4),
-    roughness: 0.88,
-    metalness: 0.03,
+    normalScale: new THREE.Vector2(0.62, 0.62),
+    roughness: 1.0,
+    metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
 
-  const plazaTex = textures.plazaAsphalt;
-  plazaTex.repeat.set(14, 14);
   const plazaMat = new THREE.MeshStandardMaterial({
     name: 'plaza-asphalt',
-    map: plazaTex,
+    map: textures.plazaAsphalt,
+    roughnessMap: textures.plazaRough,
     normalMap: textures.asphaltNormal,
-    normalScale: new THREE.Vector2(0.28, 0.28),
-    roughness: 0.82,
-    metalness: 0.04,
+    normalScale: new THREE.Vector2(0.42, 0.42),
+    roughness: 1.0,
+    metalness: 0.03,
   });
 
-  const apronTex = textures.provingApron;
-  apronTex.repeat.set(22, 26);
   const apronMat = new THREE.MeshStandardMaterial({
     name: 'proving-apron',
-    map: apronTex,
-    normalMap: textures.asphaltNormal,
-    normalScale: new THREE.Vector2(0.25, 0.25),
-    roughness: 0.85,
-    metalness: 0.03,
+    map: textures.provingApron,
+    roughnessMap: textures.concreteRough,
+    normalMap: textures.concreteNormal,
+    normalScale: new THREE.Vector2(0.4, 0.4),
+    roughness: 1.0,
+    metalness: 0.02,
+  });
+
+  const curbMat = new THREE.MeshStandardMaterial({
+    name: 'weathered-curb',
+    map: textures.concrete,
+    normalMap: textures.concreteNormal,
+    normalScale: new THREE.Vector2(0.45, 0.45),
+    roughnessMap: textures.concreteRough,
+    color: 0xc9c3b8,
+    roughness: 1.0,
+    metalness: 0.02,
   });
 
   const paintYellowMat = new THREE.MeshStandardMaterial({
     name: 'road-paint-yellow',
-    color: 0xf2b824,
-    roughness: 0.65,
+    color: 0xdca72b,
+    roughness: 0.72,
     metalness: 0.02,
     polygonOffset: true,
     polygonOffsetFactor: -2,
@@ -559,8 +609,8 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
   });
   const paintWhiteMat = new THREE.MeshStandardMaterial({
     name: 'road-paint-white',
-    color: 0xe9edf2,
-    roughness: 0.65,
+    color: 0xdfdfd8,
+    roughness: 0.74,
     metalness: 0.02,
     polygonOffset: true,
     polygonOffsetFactor: -2,
@@ -568,20 +618,29 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
   });
   const paintRedMat = new THREE.MeshStandardMaterial({
     name: 'road-paint-red',
-    color: 0xd94336,
-    roughness: 0.65,
+    color: 0xc84336,
+    roughness: 0.72,
     metalness: 0.02,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
 
-  materials.push(highwayMat, canyonMat, plazaMat, apronMat, paintYellowMat, paintWhiteMat, paintRedMat);
+  materials.push(
+    highwayMat,
+    canyonMat,
+    plazaMat,
+    apronMat,
+    curbMat,
+    paintYellowMat,
+    paintWhiteMat,
+    paintRedMat,
+  );
 
-  // Build road ribbons. Connectors sit 1.2cm lower at junctions so main highway markings stay clean on top.
+  // Build road ribbons. Connectors sit 1cm lower at junctions so main highway markings stay clean on top.
   for (const road of network.roads) {
     const isHighway = road.kind === 'highway';
-    const yOff = isHighway ? 0.015 : road.kind === 'connector' ? 0.004 : 0.01;
+    const yOff = isHighway ? 0.02 : road.kind === 'connector' ? 0.006 : 0.025;
     const tileLen = isHighway ? 24 : 18;
     const geo = buildRoadRibbonGeometry(road, tileLen, yOff);
     geometries.push(geo);
@@ -593,7 +652,7 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     group.add(mesh);
   }
 
-  // Flat paved pads (Garage Plaza & Proving Grounds).
+  // Flat paved pads (Garage Plaza & Proving Grounds) with world-scaled UVs so shared textures stay 1:1.
   for (const pad of FLAT_PADS) {
     const w = pad.maxX - pad.minX;
     const d = pad.maxZ - pad.minZ;
@@ -601,6 +660,11 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     const cz = (pad.minZ + pad.maxZ) * 0.5;
     const geo = new THREE.PlaneGeometry(w, d);
     geo.rotateX(-Math.PI / 2);
+    const tileMeters = pad.id === 'garage-plaza' ? 10 : 12;
+    const uvAttr = geo.attributes.uv as THREE.BufferAttribute;
+    for (let i = 0; i < uvAttr.count; i++) {
+      uvAttr.setXY(i, uvAttr.getX(i) * (w / tileMeters), uvAttr.getY(i) * (d / tileMeters));
+    }
     geometries.push(geo);
 
     const mesh = new THREE.Mesh(geo, pad.id === 'garage-plaza' ? plazaMat : apronMat);
@@ -612,49 +676,127 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     group.add(mesh);
   }
 
+  // Chamfered weathered concrete curbs framing the Garage Plaza, Highway Approach, and Proving Grounds.
+  const curbBatch = new MeshBatcher();
+  curbBatch.useWorldUv(curbMat, 4);
+
+  // Garage Plaza south curb (leaving open 18m gateway for Highway Connector at X = -9..+9).
+  addCurbRun(curbBatch, curbMat, -53.8, 53.8, -9.2, 53.8);
+  addCurbRun(curbBatch, curbMat, 9.2, 53.8, 53.8, 53.8);
+  // Garage Plaza east curb (leaving open 20m gateway for Proving Grounds at Z = 10..30).
+  addCurbRun(curbBatch, curbMat, 53.8, -51.8, 53.8, 10.0);
+  addCurbRun(curbBatch, curbMat, 53.8, 30.0, 53.8, 53.8);
+  // Garage Plaza west curb (leaving open 16m gateway for Canyon Pass at Z = 0..16).
+  addCurbRun(curbBatch, curbMat, -53.8, -51.8, -53.8, 0.0);
+  addCurbRun(curbBatch, curbMat, -53.8, 16.0, -53.8, 53.8);
+  // Garage Plaza north curb behind HQ.
+  addCurbRun(curbBatch, curbMat, -53.8, -51.8, 53.8, -51.8);
+
+  // Plaza-to-Highway Connector boulevard curbs (X = ±7.8, Z = 54..248).
+  addCurbRun(curbBatch, curbMat, -7.8, 54.0, -7.8, 248.0);
+  addCurbRun(curbBatch, curbMat, 7.8, 54.0, 7.8, 248.0);
+
+  // Proving Grounds outer concrete curbs (open at West entry Z=10..30 and South exit X=150..170).
+  addCurbRun(curbBatch, curbMat, 74.2, -77.8, 74.2, 10.0);
+  addCurbRun(curbBatch, curbMat, 74.2, 30.0, 74.2, 123.8);
+  addCurbRun(curbBatch, curbMat, 74.2, 123.8, 151.0, 123.8);
+  addCurbRun(curbBatch, curbMat, 169.0, 123.8, 241.8, 123.8);
+
+  const curbGroup = curbBatch.build('road-curbs', { castShadow: false, receiveShadow: true });
+  curbGroup.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) geometries.push(obj.geometry);
+  });
+  group.add(curbGroup);
+
   // Ground markings in the Garage Plaza & Crash Proving Grounds batched into 3 meshes (yellow/white/red).
   const stripeBatch = new MeshBatcher();
   const addStripe = (mat: THREE.Material, w: number, d: number, x: number, z: number, yaw = 0) => {
-    stripeBatch.decal(mat, w, d, x, 0.025, z, yaw);
+    stripeBatch.decal(mat, w, d, x, 0.024, z, yaw);
   };
 
-  // Spawn box outline around (0, 0, 0).
-  addStripe(paintYellowMat, 5.2, 0.28, 0, -4.4);
-  addStripe(paintYellowMat, 5.2, 0.28, 0, 4.4);
-  addStripe(paintYellowMat, 0.28, 9.0, -2.6, 0);
-  addStripe(paintYellowMat, 0.28, 9.0, 2.6, 0);
+  // Spawn staging box outline around (0, 0, 0) + subtle corner brackets.
+  addStripe(paintYellowMat, 5.4, 0.24, 0, -4.5);
+  addStripe(paintYellowMat, 5.4, 0.24, 0, 4.5);
+  addStripe(paintYellowMat, 0.24, 9.2, -2.7, 0);
+  addStripe(paintYellowMat, 0.24, 9.2, 2.7, 0);
 
-  // Parking bay lines in front of the Blend Garage Exterior bays.
+  // Parking bay lines in front of the Blend Garage HQ bays.
   for (let i = -3; i <= 3; i++) {
     if (i === 0) continue;
-    addStripe(paintWhiteMat, 0.22, 7.5, i * 6.5, -16);
+    addStripe(paintWhiteMat, 0.2, 7.8, i * 6.5, -16);
+  }
+  // Yellow safety crosswalk strip across garage apron.
+  for (let x = -20; x <= 20; x += 2.6) {
+    addStripe(paintYellowMat, 1.3, 1.1, x, -9.2);
   }
 
-  // Impact Wall runway lane lines (Z = +20, X = 90..202) + red/white impact zone stripes.
-  addStripe(paintYellowMat, 112, 0.35, 146, 13.5);
-  addStripe(paintYellowMat, 112, 0.35, 146, 26.5);
-  for (let x = 110; x <= 190; x += 20) {
-    addStripe(paintWhiteMat, 1.4, 12.2, x, 20);
+  // Impact Wall runway lane lines (Z = +20, X = 90..202) + distance ticks + red impact zone.
+  addStripe(paintYellowMat, 114, 0.34, 147, 13.5);
+  addStripe(paintYellowMat, 114, 0.34, 147, 26.5);
+  // Subtle center guide dashes down the crash test lane.
+  for (let x = 94; x <= 192; x += 8) {
+    addStripe(paintWhiteMat, 3.6, 0.18, x, 20);
   }
-  addStripe(paintRedMat, 8.0, 12.8, 200, 20);
+  // Transverse distance bars at 100m (X=106), 75m (X=131), 50m (X=156), 25m (X=181).
+  for (const x of [106, 131, 156, 181]) {
+    addStripe(paintWhiteMat, 0.9, 12.6, x, 20);
+  }
+  addStripe(paintRedMat, 7.2, 12.8, 200.5, 20);
 
   // Stunt Ramp approach lane (Z = -24, X = 84..195).
-  addStripe(paintWhiteMat, 110, 0.3, 139, -30.5);
-  addStripe(paintWhiteMat, 110, 0.3, 139, -17.5);
+  addStripe(paintWhiteMat, 110, 0.28, 139, -30.5);
+  addStripe(paintWhiteMat, 110, 0.28, 139, -17.5);
+  for (let x = 86; x <= 102; x += 5.5) {
+    addStripe(paintYellowMat, 1.4, 8.6, x, -24);
+  }
 
   // Slalom course lane boundaries (Z = +88, X = 88..224).
-  addStripe(paintYellowMat, 136, 0.3, 156, 76);
-  addStripe(paintYellowMat, 136, 0.3, 156, 100);
+  addStripe(paintYellowMat, 136, 0.28, 156, 76);
+  addStripe(paintYellowMat, 136, 0.28, 156, 100);
 
   // Suspension rumble strip lane (Z = -56, X = 90..205).
-  addStripe(paintWhiteMat, 115, 0.28, 147.5, -62);
-  addStripe(paintWhiteMat, 115, 0.28, 147.5, -50);
+  addStripe(paintWhiteMat, 115, 0.26, 147.5, -62);
+  addStripe(paintWhiteMat, 115, 0.26, 147.5, -50);
 
   const stripesGroup = stripeBatch.build('road-stripes', { castShadow: false, receiveShadow: true });
   stripesGroup.traverse((obj) => {
     if (obj instanceof THREE.Mesh) geometries.push(obj.geometry);
   });
   group.add(stripesGroup);
+
+  // Stenciled weathered runway distance markers ("100M", "50M", "25M", "IMPACT") on the Crash Wall lane.
+  const runwaySpecs: readonly { tex: THREE.Texture; x: number; z: number; w: number; d: number }[] = [
+    { tex: textures.runwayDecals.mark100m, x: 111.5, z: 20, w: 6.4, d: 3.2 },
+    { tex: textures.runwayDecals.mark50m, x: 161.5, z: 20, w: 6.4, d: 3.2 },
+    { tex: textures.runwayDecals.mark25m, x: 186.5, z: 20, w: 6.4, d: 3.2 },
+    { tex: textures.runwayDecals.markImpact, x: 200.5, z: 20, w: 6.8, d: 3.4 },
+  ];
+  for (let i = 0; i < runwaySpecs.length; i++) {
+    const r = runwaySpecs[i];
+    const decalMat = new THREE.MeshStandardMaterial({
+      name: `runway-decal-${i}`,
+      map: r.tex,
+      transparent: true,
+      roughness: 0.78,
+      metalness: 0.02,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+    materials.push(decalMat);
+    const decalGeo = new THREE.PlaneGeometry(r.w, r.d);
+    decalGeo.rotateX(-Math.PI / 2);
+    // Rotate so text reads upright for a car driving eastbound (+X) toward the crash wall.
+    decalGeo.rotateY(-Math.PI / 2);
+    geometries.push(decalGeo);
+    const mesh = new THREE.Mesh(decalGeo, decalMat);
+    mesh.position.set(r.x, 0.032, r.z);
+    mesh.receiveShadow = true;
+    mesh.updateMatrix();
+    mesh.matrixAutoUpdate = false;
+    group.add(mesh);
+  }
 
   return { group, geometries, materials };
 }
@@ -665,13 +807,25 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
 export function computeRoadBlend(network: RoadNetwork, x: number, z: number): {
   flattenWeight: number;
   depressWeight: number;
+  depressDepth: number;
   targetY: number;
 } {
   const q = network.query(x, z);
-  const padMargin = q.sample ? 18 : 22;
-  // Keep exact road elevation out to 4m past the asphalt edge so heightfield interpolation stays smooth on hills.
-  const flattenWeight = 1 - smoothstep(4.0, padMargin, q.distance);
-  // Depress visual terrain slightly under actual paved surfaces so zero Z-fighting ever occurs.
-  const depressWeight = q.onRoad ? 1 : 1 - smoothstep(0, 1.0, q.distance);
-  return { flattenWeight, depressWeight, targetY: q.roadY };
+  const isSplineRoad = q.sample !== null;
+  const padMargin = isSplineRoad ? 22 : 22;
+  // Keep exact road elevation well past the asphalt edge so heightfield triangles stay smooth on curved hills.
+  const flattenWeight = 1 - smoothstep(isSplineRoad ? 5.5 : 4.0, padMargin, q.distance);
+
+  // Depress visual terrain across the full road + shoulder corridor so coarse 7.5m terrain triangles
+  // bridging curved hillside bends (e.g. Canyon Pass) can never poke through the asphalt ribbon.
+  const depressWeight = isSplineRoad
+    ? 1 - smoothstep(3.2, 9.2, q.distance)
+    : q.onRoad
+      ? 1
+      : 1 - smoothstep(0, 1.5, q.distance);
+
+  // Deeper visual cut under elevated/sloped spline roads (tucked seamlessly under the -0.75m road earth verge).
+  const depressDepth = isSplineRoad && q.roadY > 0.2 ? 0.64 : 0.2;
+
+  return { flattenWeight, depressWeight, depressDepth, targetY: q.roadY };
 }

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { BoxColliderDef, CylinderColliderDef, TrimeshColliderDef, WorldColliderDef } from '@blend-garage/world-racing';
-import { seededRandom } from '../math';
+import { clamp, lerp, seededRandom } from '../math';
 import { MeshBatcher } from '../MeshBatcher';
+import { createFoliageAndPropTextures } from './foliageTextures';
 import type { RoadNetwork } from './roads';
 import type { TerrainData } from './terrain';
 import type { WorldTextures } from './textures';
@@ -11,6 +13,900 @@ export interface WorldPropsResult {
   geometries: THREE.BufferGeometry[];
   materials: THREE.Material[];
   colliders: WorldColliderDef[];
+}
+
+// ---------------------------------------------------------------------------
+// Procedural Geometry Helpers (Pure TypeScript + Three.js)
+// ---------------------------------------------------------------------------
+
+/** Normalizes and merges geometries while preserving `position`, `normal`, `uv`, and `color`. */
+function mergeColoredParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const normalized: THREE.BufferGeometry[] = [];
+  for (const raw of parts) {
+    const g = raw.index ? raw.toNonIndexed() : raw;
+    if (raw.index) raw.dispose();
+
+    for (const key of Object.keys(g.attributes)) {
+      if (key !== 'position' && key !== 'normal' && key !== 'uv' && key !== 'color') {
+        g.deleteAttribute(key);
+      }
+    }
+    const count = g.attributes.position.count;
+    if (!g.attributes.normal) g.computeVertexNormals();
+    if (!g.attributes.uv) {
+      g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
+    }
+    if (!g.attributes.color) {
+      const col = new Float32Array(count * 3);
+      col.fill(1);
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    }
+    normalized.push(g);
+  }
+  const merged = mergeGeometries(normalized, false);
+  for (const g of normalized) g.dispose();
+  if (!merged) {
+    throw new Error('Failed to merge procedural prop geometry parts');
+  }
+  return merged;
+}
+
+/** Paints a uniform sRGB-converted linear color onto all vertices of a geometry. */
+function tintGeometry(geo: THREE.BufferGeometry, hex: number): THREE.BufferGeometry {
+  const c = new THREE.Color(hex);
+  const count = geo.attributes.position.count;
+  const arr = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    arr[i * 3] = c.r;
+    arr[i * 3 + 1] = c.g;
+    arr[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  return geo;
+}
+
+/**
+ * Sweeps a tapered organic bark tube along a 3D polyline with smooth cylindrical normals,
+ * tiled bark UVs, and root/crotch AO vertex colors.
+ */
+function buildTaperedBranchTube(
+  points: readonly THREE.Vector3[],
+  radii: readonly number[],
+  radialSegs: number,
+  uvTileV = 0.55,
+  baseAo = 0.58,
+  tipAo = 0.96,
+): THREE.BufferGeometry {
+  const rings = points.length;
+  const cols = radialSegs + 1;
+  const positions = new Float32Array(rings * cols * 3);
+  const normals = new Float32Array(rings * cols * 3);
+  const uvs = new Float32Array(rings * cols * 2);
+  const colors = new Float32Array(rings * cols * 3);
+  const indices: number[] = [];
+
+  const tangent = new THREE.Vector3();
+  const prevNormal = new THREE.Vector3(1, 0, 0);
+  const binormal = new THREE.Vector3();
+  const frameN = new THREE.Vector3();
+  let dist = 0;
+
+  for (let r = 0; r < rings; r++) {
+    const p = points[r];
+    if (r > 0) dist += p.distanceTo(points[r - 1]);
+
+    if (r === 0) tangent.subVectors(points[1], points[0]).normalize();
+    else if (r === rings - 1) tangent.subVectors(points[r], points[r - 1]).normalize();
+    else tangent.subVectors(points[r + 1], points[r - 1]).normalize();
+
+    if (r === 0) {
+      const ref = Math.abs(tangent.y) < 0.92 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      prevNormal.crossVectors(ref, tangent).normalize();
+    } else {
+      // Parallel-transport frame to prevent twisting along curved trunks/limbs.
+      prevNormal.addScaledVector(tangent, -prevNormal.dot(tangent));
+      if (prevNormal.lengthSq() < 1e-6) prevNormal.set(1, 0, 0);
+      prevNormal.normalize();
+    }
+    binormal.crossVectors(tangent, prevNormal).normalize();
+
+    const rad = radii[r];
+    const t = r / Math.max(1, rings - 1);
+    const ao = lerp(baseAo, tipAo, Math.pow(t, 0.7));
+
+    for (let s = 0; s < cols; s++) {
+      const u = s / radialSegs;
+      const ang = u * Math.PI * 2;
+      const ca = Math.cos(ang);
+      const sa = Math.sin(ang);
+      // Subtle organic bark fluting near the root buttress.
+      const flute = r <= 1 ? 1 + 0.12 * Math.sin(ang * 5) * (1 - r * 0.5) : 1;
+      frameN.set(
+        prevNormal.x * ca + binormal.x * sa,
+        prevNormal.y * ca + binormal.y * sa,
+        prevNormal.z * ca + binormal.z * sa,
+      ).normalize();
+
+      const vi = r * cols + s;
+      positions[vi * 3] = p.x + frameN.x * rad * flute;
+      positions[vi * 3 + 1] = p.y + frameN.y * rad * flute;
+      positions[vi * 3 + 2] = p.z + frameN.z * rad * flute;
+
+      normals[vi * 3] = frameN.x;
+      normals[vi * 3 + 1] = frameN.y;
+      normals[vi * 3 + 2] = frameN.z;
+
+      uvs[vi * 2] = u;
+      uvs[vi * 2 + 1] = dist * uvTileV;
+
+      colors[vi * 3] = ao;
+      colors[vi * 3 + 1] = ao * 0.98;
+      colors[vi * 3 + 2] = ao * 0.95;
+    }
+  }
+
+  for (let r = 0; r < rings - 1; r++) {
+    for (let s = 0; s < radialSegs; s++) {
+      const a = r * cols + s;
+      const b = a + 1;
+      const c = (r + 1) * cols + s;
+      const d = c + 1;
+      indices.push(a, b, c, b, d, c);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  return geo;
+}
+
+/**
+ * Builds a 2x2 subdivided curved foliage frond/card (8 tris) so botanical leaves & boughs
+ * read as volumetric 3D forms rather than flat intersecting paper planes.
+ */
+function buildCurvedCard(
+  width: number,
+  length: number,
+  archY: number,
+  droopY: number,
+  cupY: number,
+  pivotAtBase: boolean,
+): THREE.BufferGeometry {
+  const segX = 2;
+  const segZ = 2;
+  const cols = segX + 1;
+  const rows = segZ + 1;
+  const positions = new Float32Array(cols * rows * 3);
+  const uvs = new Float32Array(cols * rows * 2);
+  const indices: number[] = [];
+
+  for (let iz = 0; iz < rows; iz++) {
+    const v = iz / segZ; // 0 = base stem, 1 = outer tip
+    const z = pivotAtBase ? v * length : (v - 0.5) * length;
+    const arch = Math.sin(v * Math.PI) * archY - v * v * droopY;
+    for (let ix = 0; ix < cols; ix++) {
+      const u = ix / segX;
+      const nx = u * 2 - 1;
+      const x = nx * width * 0.5;
+      const y = arch - nx * nx * cupY;
+      const vi = iz * cols + ix;
+      positions[vi * 3] = x;
+      positions[vi * 3 + 1] = y;
+      positions[vi * 3 + 2] = z;
+      uvs[vi * 2] = u;
+      uvs[vi * 2 + 1] = v;
+    }
+  }
+
+  for (let iz = 0; iz < segZ; iz++) {
+    for (let ix = 0; ix < segX; ix++) {
+      const a = iz * cols + ix;
+      const b = a + 1;
+      const c = (iz + 1) * cols + ix;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Coastal Pine / California Conifer:
+ * - Crooked tapered bark trunk with flared root collar + upper woody bough stubs
+ * - 8 staggered whorls of arched 3D pine-bough fronds + vertical infill sprays
+ * - Outward-upward ellipsoidal botanical vertex normals + interior canopy AO vertex colors
+ */
+function buildCoastalPineGeometries(): { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry } {
+  const rand = seededRandom(5101);
+
+  // 1. Crooked tapered trunk + protruding woody limb stubs
+  const trunkPts = [
+    new THREE.Vector3(0.0, -0.75, 0.0),
+    new THREE.Vector3(0.0, 0.25, 0.0),
+    new THREE.Vector3(0.06, 2.2, -0.04),
+    new THREE.Vector3(0.11, 4.6, 0.05),
+    new THREE.Vector3(0.04, 7.2, 0.08),
+    new THREE.Vector3(-0.04, 9.6, 0.02),
+    new THREE.Vector3(0.0, 11.4, 0.0),
+  ];
+  const trunkRadii = [0.46, 0.34, 0.26, 0.21, 0.15, 0.09, 0.035];
+  const trunkParts: THREE.BufferGeometry[] = [buildTaperedBranchTube(trunkPts, trunkRadii, 7, 0.65, 0.56, 0.92)];
+
+  // Woody branch stubs emerging into lower & mid pine whorls
+  const stubHeights = [2.9, 3.6, 4.4, 5.2, 6.1, 7.0];
+  for (let i = 0; i < stubHeights.length; i++) {
+    const h = stubHeights[i];
+    const ang = i * 2.39996 + 0.4;
+    const len = lerp(1.35, 0.72, i / stubHeights.length);
+    const dirX = Math.cos(ang);
+    const dirZ = Math.sin(ang);
+    const pts = [
+      new THREE.Vector3(0, h, 0),
+      new THREE.Vector3(dirX * len * 0.55, h + 0.14, dirZ * len * 0.55),
+      new THREE.Vector3(dirX * len, h - 0.12, dirZ * len),
+    ];
+    trunkParts.push(buildTaperedBranchTube(pts, [0.095, 0.065, 0.03], 5, 0.8, 0.52, 0.78));
+  }
+  const trunk = mergeColoredParts(trunkParts);
+
+  // 2. Multi-whorl 3D curved pine boughs (ZERO cones!)
+  const canopyParts: THREE.BufferGeometry[] = [];
+  const tiers: readonly { y: number; count: number; len: number; wid: number; pitch: number; droop: number; yawOff: number }[] = [
+    { y: 2.75, count: 5, len: 3.15, wid: 2.45, pitch: 0.24, droop: 0.45, yawOff: 0.1 },
+    { y: 3.95, count: 5, len: 2.95, wid: 2.32, pitch: 0.19, droop: 0.38, yawOff: 0.72 },
+    { y: 5.15, count: 5, len: 2.68, wid: 2.12, pitch: 0.13, droop: 0.32, yawOff: 0.38 },
+    { y: 6.35, count: 5, len: 2.35, wid: 1.92, pitch: 0.06, droop: 0.26, yawOff: 1.04 },
+    { y: 7.50, count: 5, len: 1.98, wid: 1.68, pitch: -0.05, droop: 0.20, yawOff: 0.55 },
+    { y: 8.60, count: 4, len: 1.62, wid: 1.44, pitch: -0.18, droop: 0.14, yawOff: 1.25 },
+    { y: 9.60, count: 4, len: 1.28, wid: 1.20, pitch: -0.34, droop: 0.10, yawOff: 0.45 },
+    { y: 10.45, count: 3, len: 1.25, wid: 0.98, pitch: -0.78, droop: 0.06, yawOff: 0.9 },
+  ];
+
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const p = new THREE.Vector3();
+  const sc = new THREE.Vector3(1, 1, 1);
+
+  for (let ti = 0; ti < tiers.length; ti++) {
+    const tier = tiers[ti];
+    for (let k = 0; k < tier.count; k++) {
+      const yaw = tier.yawOff + (k / tier.count) * Math.PI * 2 + (rand() - 0.5) * 0.24;
+      const lenJitter = tier.len * (0.88 + rand() * 0.24);
+      const widJitter = tier.wid * (0.90 + rand() * 0.20);
+      const card = buildCurvedCard(widJitter, lenJitter, 0.18, tier.droop, 0.24, true);
+      const roll = (rand() - 0.5) * 0.28;
+      e.set(tier.pitch + (rand() - 0.5) * 0.09, yaw, roll, 'YXZ');
+      q.setFromEuler(e);
+      p.set(Math.sin(yaw) * 0.08, tier.y + (rand() - 0.5) * 0.25, Math.cos(yaw) * 0.08);
+      m.compose(p, q, sc);
+      card.applyMatrix4(m);
+      canopyParts.push(card);
+
+      // Add a tilted cross-bough on lower/mid tiers so eye-level silhouettes are lush and non-pancaked.
+      if (ti < 5 && k % 2 === 0) {
+        const crossCard = buildCurvedCard(widJitter * 0.85, lenJitter * 0.88, 0.12, tier.droop * 0.6, 0.18, true);
+        e.set(tier.pitch - 0.18, yaw + 0.34, (k % 4 === 0 ? 1 : -1) * 0.72, 'YXZ');
+        q.setFromEuler(e);
+        p.set(Math.sin(yaw + 0.34) * 0.12, tier.y + 0.32, Math.cos(yaw + 0.34) * 0.12);
+        m.compose(p, q, sc);
+        crossCard.applyMatrix4(m);
+        canopyParts.push(crossCard);
+      }
+    }
+  }
+
+  const canopy = mergeColoredParts(canopyParts);
+
+  // Transfer smooth outward-upward botanical normals + canopy AO vertex colors!
+  const posAttr = canopy.attributes.position as THREE.BufferAttribute;
+  const normAttr = canopy.attributes.normal as THREE.BufferAttribute;
+  const colAttr = canopy.attributes.color as THREE.BufferAttribute;
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+
+  for (let i = 0; i < posAttr.count; i++) {
+    v.fromBufferAttribute(posAttr, i);
+    const horiz = Math.hypot(v.x, v.z);
+    const heightT = clamp((v.y - 2.3) / 9.2, 0, 1);
+    const expectedRad = lerp(2.9, 0.5, heightT);
+    const radialT = clamp(horiz / Math.max(0.5, expectedRad), 0, 1);
+
+    // Smooth ellipsoidal outward + upward normal prevents dark card backface seams.
+    n.set(v.x, (v.y - 6.1) * 0.55 + 1.55, v.z).normalize();
+    normAttr.setXYZ(i, n.x, n.y, n.z);
+
+    // Interior deep pine shadow -> warm sunlit outer tips
+    const ao = lerp(0.58, 1.05, clamp(radialT * 0.62 + heightT * 0.52, 0, 1));
+    colAttr.setXYZ(i, ao * lerp(0.88, 1.04, heightT), ao * lerp(0.95, 1.01, heightT), ao * lerp(0.88, 0.93, heightT));
+  }
+  normAttr.needsUpdate = true;
+  colAttr.needsUpdate = true;
+
+  return { trunk, canopy };
+}
+
+/**
+ * California Live Oak / Broadleaf Tree:
+ * - Gnarled flared trunk forking into 4 spreading primary boughs & 4 secondary branches
+ * - 26 cupped broadleaf cluster cards arranged in 5 asymmetric natural canopy lobes (ZERO spheres!)
+ * - Blended spherical-lobe outward normals + deep interior canopy AO vertex colors
+ */
+function buildCaliforniaOakGeometries(): { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry } {
+  const rand = seededRandom(5209);
+
+  // 1. Multi-forked oak trunk & spreading boughs
+  const mainTrunk = [
+    new THREE.Vector3(0, -0.75, 0),
+    new THREE.Vector3(0.02, 0.3, 0.01),
+    new THREE.Vector3(0.08, 1.35, -0.05),
+    new THREE.Vector3(0.04, 2.35, 0.02),
+  ];
+  const trunkParts: THREE.BufferGeometry[] = [
+    buildTaperedBranchTube(mainTrunk, [0.54, 0.39, 0.33, 0.29], 8, 0.55, 0.52, 0.85),
+  ];
+
+  const limbs: readonly { dx: number; dz: number; midY: number; tipY: number; reach: number; r0: number }[] = [
+    { dx: 0.92, dz: 0.38, midY: 3.45, tipY: 4.85, reach: 2.35, r0: 0.21 },
+    { dx: -0.84, dz: 0.54, midY: 3.60, tipY: 5.05, reach: 2.25, r0: 0.20 },
+    { dx: -0.58, dz: -0.81, midY: 3.35, tipY: 4.75, reach: 2.20, r0: 0.19 },
+    { dx: 0.66, dz: -0.75, midY: 3.55, tipY: 5.15, reach: 2.30, r0: 0.20 },
+  ];
+
+  const lobeCenters: { c: THREE.Vector3; rad: number }[] = [
+    { c: new THREE.Vector3(0.0, 6.25, 0.0), rad: 2.35 },
+  ];
+
+  for (let i = 0; i < limbs.length; i++) {
+    const l = limbs[i];
+    const start = new THREE.Vector3(0.04, 2.15, 0.02);
+    const mid = new THREE.Vector3(l.dx * l.reach * 0.52, l.midY, l.dz * l.reach * 0.52);
+    const tip = new THREE.Vector3(l.dx * l.reach, l.tipY, l.dz * l.reach);
+    trunkParts.push(buildTaperedBranchTube([start, mid, tip], [l.r0, l.r0 * 0.65, 0.06], 6, 0.65, 0.56, 0.82));
+
+    // Secondary ascending fork from mid-limb toward upper crown
+    const subTip = new THREE.Vector3(
+      l.dx * l.reach * 0.72 + (rand() - 0.5) * 0.6,
+      l.tipY + 0.95,
+      l.dz * l.reach * 0.72 + (rand() - 0.5) * 0.6,
+    );
+    trunkParts.push(buildTaperedBranchTube([mid, subTip], [l.r0 * 0.55, 0.05], 5, 0.7, 0.55, 0.80));
+
+    lobeCenters.push({ c: new THREE.Vector3(tip.x * 0.92, tip.y + 0.35, tip.z * 0.92), rad: 1.95 });
+  }
+  const trunk = mergeColoredParts(trunkParts);
+
+  // 2. Asymmetric multi-cluster oak foliage cards around the 5 lobes
+  const canopyParts: THREE.BufferGeometry[] = [];
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const pos = new THREE.Vector3();
+  const sc = new THREE.Vector3(1, 1, 1);
+
+  for (let li = 0; li < lobeCenters.length; li++) {
+    const lobe = lobeCenters[li];
+    const cardCount = li === 0 ? 7 : 5;
+    for (let k = 0; k < cardCount; k++) {
+      const az = (k / cardCount) * Math.PI * 2 + li * 0.8 + (rand() - 0.5) * 0.35;
+      const elev = (k === 0 ? 0.55 : -0.1 + rand() * 0.55);
+      const dist = lobe.rad * (k === 0 ? 0.22 : 0.42 + rand() * 0.34);
+      const size = (li === 0 ? 2.65 : 2.35) * (0.85 + rand() * 0.28);
+
+      const card = buildCurvedCard(size, size * (0.9 + rand() * 0.2), 0.22, 0.14, 0.26, false);
+
+      pos.set(
+        lobe.c.x + Math.cos(az) * Math.cos(elev) * dist,
+        lobe.c.y + Math.sin(elev) * dist * 0.75,
+        lobe.c.z + Math.sin(az) * Math.cos(elev) * dist,
+      );
+
+      // Mix of dome-tilted outer cards and steeper side-facing volume cards
+      const pitch = k === 0 ? (rand() - 0.5) * 0.3 : 0.45 + rand() * 0.85;
+      const roll = (rand() - 0.5) * 0.55;
+      e.set(pitch, az + Math.PI * 0.5, roll, 'YXZ');
+      q.setFromEuler(e);
+      m.compose(pos, q, sc);
+      card.applyMatrix4(m);
+      canopyParts.push(card);
+    }
+  }
+
+  const canopy = mergeColoredParts(canopyParts);
+
+  // Smooth outward spherical-lobe normals + lush interior crown AO!
+  const posAttr = canopy.attributes.position as THREE.BufferAttribute;
+  const normAttr = canopy.attributes.normal as THREE.BufferAttribute;
+  const colAttr = canopy.attributes.color as THREE.BufferAttribute;
+  const crownCenter = new THREE.Vector3(0, 5.1, 0);
+  const v = new THREE.Vector3();
+  const nTree = new THREE.Vector3();
+  const nLobe = new THREE.Vector3();
+
+  for (let i = 0; i < posAttr.count; i++) {
+    v.fromBufferAttribute(posAttr, i);
+
+    let nearest = lobeCenters[0];
+    let bestD2 = Infinity;
+    for (const lc of lobeCenters) {
+      const d2 = v.distanceToSquared(lc.c);
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        nearest = lc;
+      }
+    }
+
+    nTree.subVectors(v, crownCenter);
+    nTree.y += 1.05;
+    nTree.normalize();
+
+    nLobe.subVectors(v, nearest.c);
+    nLobe.y += 0.55;
+    nLobe.normalize();
+
+    nTree.lerp(nLobe, 0.45).normalize();
+    normAttr.setXYZ(i, nTree.x, nTree.y, nTree.z);
+
+    const distFromCore = v.distanceTo(crownCenter);
+    const heightT = clamp((v.y - 3.3) / 4.3, 0, 1);
+    const radialT = clamp((distFromCore - 0.8) / 3.0, 0, 1);
+    const ao = lerp(0.56, 1.06, clamp(radialT * 0.58 + heightT * 0.58, 0, 1));
+    colAttr.setXYZ(i, ao * lerp(0.88, 1.05, heightT), ao * lerp(0.95, 1.02, heightT), ao * lerp(0.86, 0.91, heightT));
+  }
+  normAttr.needsUpdate = true;
+  colAttr.needsUpdate = true;
+
+  return { trunk, canopy };
+}
+
+/**
+ * 3-plane star-crossed curved coastal wild grass tuft with soft upward normals and grounded root AO.
+ */
+function buildGrassTuftGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const angles = [0, Math.PI / 3, (Math.PI * 2) / 3];
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const p = new THREE.Vector3();
+  const sc = new THREE.Vector3(1, 1, 1);
+
+  for (let i = 0; i < angles.length; i++) {
+    const w = 1.32;
+    const h = 0.86;
+    const g = new THREE.PlaneGeometry(w, h, 2, 2);
+    // Shift base to y = -0.06 and curve upper tips slightly outward for 3D volume.
+    const pos = g.attributes.position as THREE.BufferAttribute;
+    const col = new Float32Array(pos.count * 3);
+    for (let vi = 0; vi < pos.count; vi++) {
+      const px = pos.getX(vi);
+      const py = pos.getY(vi) + h * 0.5 - 0.06;
+      const t = clamp((py + 0.06) / h, 0, 1);
+      const bowZ = t * t * 0.18 * (i % 2 === 0 ? 1 : -1);
+      const flareX = px * (1 + t * 0.24);
+      pos.setXYZ(vi, flareX, py, bowZ);
+
+      const ao = lerp(0.62, 1.04, Math.pow(t, 0.7));
+      col[vi * 3] = ao * 1.02;
+      col[vi * 3 + 1] = ao * 1.0;
+      col[vi * 3 + 2] = ao * 0.92;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+    e.set(0, angles[i], 0);
+    q.setFromEuler(e);
+    m.compose(p, q, sc);
+    g.applyMatrix4(m);
+    parts.push(g);
+  }
+
+  const merged = mergeColoredParts(parts);
+  // Soft upward terrain-blended normals so crossed grass cards never show harsh lighting seams.
+  const posAttr = merged.attributes.position as THREE.BufferAttribute;
+  const normAttr = merged.attributes.normal as THREE.BufferAttribute;
+  const n = new THREE.Vector3();
+  for (let i = 0; i < posAttr.count; i++) {
+    n.set(posAttr.getX(i) * 0.35, 0.92, posAttr.getZ(i) * 0.35).normalize();
+    normAttr.setXYZ(i, n.x, n.y, n.z);
+  }
+  normAttr.needsUpdate = true;
+  return merged;
+}
+
+/**
+ * Low California sagebrush / chaparral bush built from 8 angled cupped leaf-cluster cards.
+ */
+function buildChaparralShrubGeometry(): THREE.BufferGeometry {
+  const rand = seededRandom(5317);
+  const parts: THREE.BufferGeometry[] = [];
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const p = new THREE.Vector3();
+  const sc = new THREE.Vector3(1, 1, 1);
+
+  for (let i = 0; i < 8; i++) {
+    const az = (i / 8) * Math.PI * 2 + (rand() - 0.5) * 0.35;
+    const r = i < 2 ? 0.18 : 0.42 + rand() * 0.24;
+    const size = i < 2 ? 1.35 : 1.12 + rand() * 0.26;
+    const card = buildCurvedCard(size, size * 0.92, 0.16, 0.12, 0.22, false);
+    const pitch = i < 2 ? 0.22 : 0.65 + rand() * 0.45;
+    e.set(pitch, az + Math.PI * 0.5, (rand() - 0.5) * 0.4, 'YXZ');
+    q.setFromEuler(e);
+    p.set(Math.cos(az) * r, i < 2 ? 0.68 : 0.42 + rand() * 0.22, Math.sin(az) * r);
+    m.compose(p, q, sc);
+    card.applyMatrix4(m);
+    parts.push(card);
+  }
+
+  const merged = mergeColoredParts(parts);
+  const posAttr = merged.attributes.position as THREE.BufferAttribute;
+  const normAttr = merged.attributes.normal as THREE.BufferAttribute;
+  const colAttr = merged.attributes.color as THREE.BufferAttribute;
+  const n = new THREE.Vector3();
+
+  for (let i = 0; i < posAttr.count; i++) {
+    const x = posAttr.getX(i);
+    const y = posAttr.getY(i);
+    const z = posAttr.getZ(i);
+    n.set(x, Math.max(0.25, y) + 0.55, z).normalize();
+    normAttr.setXYZ(i, n.x, n.y, n.z);
+
+    const hT = clamp((y + 0.05) / 1.05, 0, 1);
+    const ao = lerp(0.60, 1.04, hT);
+    colAttr.setXYZ(i, ao, ao, ao * 0.96);
+  }
+  normAttr.needsUpdate = true;
+  colAttr.needsUpdate = true;
+  return merged;
+}
+
+/**
+ * Noise-sculpted stratified California sandstone / granite boulder with triplanar UVs & crevice AO.
+ */
+function buildSculptedBoulderGeometry(seed: number, angularity: number): THREE.BufferGeometry {
+  const rand = seededRandom(seed);
+  const base = new THREE.IcosahedronGeometry(1.0, 2);
+  const pos = base.attributes.position as THREE.BufferAttribute;
+
+  // Deterministic random rock cleavage planes & strata phase
+  const planes: { nx: number; ny: number; nz: number; cut: number }[] = [];
+  for (let i = 0; i < 6; i++) {
+    const v = new THREE.Vector3(rand() * 2 - 1, rand() * 1.4 - 0.4, rand() * 2 - 1).normalize();
+    planes.push({ nx: v.x, ny: v.y, nz: v.z, cut: 0.62 + rand() * 0.34 });
+  }
+  const p1 = rand() * 10;
+  const p2 = rand() * 10;
+  const p3 = rand() * 10;
+
+  const displaced = new Float32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    let x = pos.getX(i);
+    let y = pos.getY(i);
+    let z = pos.getZ(i);
+
+    // Multi-frequency rocky lumps + sedimentary horizontal ledges
+    const n1 = Math.sin(x * 2.4 + p1) * Math.cos(z * 2.2 + p2) * Math.sin(y * 2.6 + p3);
+    const n2 = Math.sin(x * 5.3 - z * 4.1 + p2) * Math.cos(y * 5.8 + p1) * 0.45;
+    const strata = Math.sin(y * 7.5 + n1 * 1.4) * 0.085;
+    let r = 1.0 + n1 * 0.22 + n2 * 0.10 + strata;
+
+    // Flatten natural rock fracture cleavage planes
+    for (const pl of planes) {
+      const proj = x * pl.nx + y * pl.ny + z * pl.nz;
+      if (proj > pl.cut) {
+        r -= (proj - pl.cut) * angularity;
+      }
+    }
+
+    x *= r;
+    y *= r;
+    z *= r;
+    // Grounded broad underside so boulders nestle organically into hillsides
+    if (y < -0.35) y = -0.35 + (y + 0.35) * 0.36;
+
+    pos.setXYZ(i, x, y, z);
+    displaced[i] = r;
+  }
+
+  // Ensure non-indexed geometry for crisp triplanar UV mapping + partial flat/smooth rock shading
+  const geo = base.index ? base.toNonIndexed() : base;
+  if (base.index) base.dispose();
+  geo.computeVertexNormals();
+
+  const gPos = geo.attributes.position as THREE.BufferAttribute;
+  const gNorm = geo.attributes.normal as THREE.BufferAttribute;
+  const uvs = new Float32Array(gPos.count * 2);
+  const cols = new Float32Array(gPos.count * 3);
+
+  for (let i = 0; i < gPos.count; i++) {
+    const x = gPos.getX(i);
+    const y = gPos.getY(i);
+    const z = gPos.getZ(i);
+    const ax = Math.abs(gNorm.getX(i));
+    const ay = Math.abs(gNorm.getY(i));
+    const az = Math.abs(gNorm.getZ(i));
+
+    if (ay >= ax && ay >= az) {
+      uvs[i * 2] = x * 0.55;
+      uvs[i * 2 + 1] = z * 0.55;
+    } else if (ax >= az) {
+      uvs[i * 2] = z * 0.55;
+      uvs[i * 2 + 1] = y * 0.55;
+    } else {
+      uvs[i * 2] = x * 0.55;
+      uvs[i * 2 + 1] = y * 0.55;
+    }
+
+    // Subtle sunlit top vs shadowed grounded underside + stratified band tint
+    const topT = clamp((y + 0.55) / 1.45, 0, 1);
+    const strataBand = Math.sin(y * 8.5 + x * 1.2) * 0.05;
+    const shade = clamp(lerp(0.58, 1.02, topT) + strataBand, 0.45, 1.08);
+    cols[i * 3] = shade * 1.02;
+    cols[i * 3 + 1] = shade * 0.99;
+    cols[i * 3 + 2] = shade * 0.94;
+  }
+
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  return geo;
+}
+
+/**
+ * Extruded highway W-beam corrugated guardrail section (1.0m unit length along Z: -0.5..+0.5).
+ */
+function buildWBeamGuardrailGeometry(): THREE.BufferGeometry {
+  // Double-wave corrugated W-beam cross section (X thickness, Y height ~0.34m)
+  const front: readonly [number, number][] = [
+    [-0.036, 0.17],
+    [0.048, 0.14],
+    [0.048, 0.058],
+    [-0.028, 0.0],
+    [0.048, -0.058],
+    [0.048, -0.14],
+    [-0.036, -0.17],
+  ];
+  const thick = 0.024;
+  // Closed loop: front top->bottom, then back bottom->top
+  const ring: [number, number][] = [...front];
+  for (let i = front.length - 1; i >= 0; i--) {
+    ring.push([front[i][0] - thick, front[i][1]]);
+  }
+
+  const n = ring.length;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    const vA = clamp(0.5 - a[1] / 0.34, 0, 1);
+    const vB = clamp(0.5 - b[1] / 0.34, 0, 1);
+    const base = positions.length / 3;
+    positions.push(
+      a[0], a[1], -0.5,
+      a[0], a[1], 0.5,
+      b[0], b[1], -0.5,
+      b[0], b[1], 0.5,
+    );
+    uvs.push(
+      0, vA,
+      2, vA,
+      0, vB,
+      2, vB,
+    );
+    indices.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Guardrail vertical steel I-beam post with top offset spacer blockout holding the W-beam.
+ */
+function buildGuardrailPostGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const postH = 1.08;
+  // I-beam flanges & web (centered at y = 0.30 so it embeds -0.24m below road shoulder)
+  const web = new THREE.BoxGeometry(0.11, postH, 0.024);
+  web.translate(0, 0.30, 0);
+  const f1 = new THREE.BoxGeometry(0.024, postH, 0.11);
+  f1.translate(0.052, 0.30, 0);
+  const f2 = new THREE.BoxGeometry(0.024, postH, 0.11);
+  f2.translate(-0.052, 0.30, 0);
+  // Offset spacer blockout at W-beam elevation
+  const blockout = new THREE.BoxGeometry(0.16, 0.34, 0.12);
+  blockout.translate(0.0, 0.62, 0);
+
+  parts.push(tintGeometry(web, 0x7c848d), tintGeometry(f1, 0x8a929b), tintGeometry(f2, 0x8a929b), tintGeometry(blockout, 0x4b5158));
+  return mergeColoredParts(parts);
+}
+
+/**
+ * Extruded New Jersey Type-F beveled concrete barrier along Z (`length`), standing on y = 0.
+ */
+function buildJerseyBarrierGeometry(length: number, height = 1.08, baseWidth = 0.88): THREE.BufferGeometry {
+  const hw = baseWidth * 0.5;
+  const kneeX = hw * 0.54;
+  const topX = hw * 0.30;
+  const profile: readonly [number, number][] = [
+    [-hw, 0],
+    [hw, 0],
+    [hw, 0.10],
+    [kneeX, 0.34],
+    [topX, height],
+    [-topX, height],
+    [-kneeX, 0.34],
+    [-hw, 0.10],
+  ];
+
+  const halfL = length * 0.5;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const pushQuad = (
+    ax: number, ay: number, az: number, au: number, av: number,
+    bx: number, by: number, bz: number, bu: number, bv: number,
+    cx: number, cy: number, cz: number, cu: number, cv: number,
+    dx: number, dy: number, dz: number, du: number, dv: number,
+  ) => {
+    const base = positions.length / 3;
+    positions.push(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz);
+    uvs.push(au, av, bu, bv, cu, cv, du, dv);
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+
+  for (let i = 0; i < profile.length; i++) {
+    const a = profile[i];
+    const b = profile[(i + 1) % profile.length];
+    pushQuad(
+      a[0], a[1], -halfL, 0, a[1] / 2,
+      b[0], b[1], -halfL, 0, b[1] / 2,
+      b[0], b[1], halfL, length / 2.4, b[1] / 2,
+      a[0], a[1], halfL, length / 2.4, a[1] / 2,
+    );
+  }
+
+  // Front (+Z) and Back (-Z) fan caps
+  const capStart = positions.length / 3;
+  for (const [px, py] of profile) {
+    positions.push(px, py, halfL);
+    uvs.push(px * 0.5, py * 0.5);
+  }
+  for (let i = 1; i < profile.length - 1; i++) {
+    indices.push(capStart, capStart + i, capStart + i + 1);
+  }
+
+  const backStart = positions.length / 3;
+  for (const [px, py] of profile) {
+    positions.push(px, py, -halfL);
+    uvs.push(px * 0.5, py * 0.5);
+  }
+  for (let i = 1; i < profile.length - 1; i++) {
+    indices.push(backStart, backStart + i + 1, backStart + i);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Tapered galvanized highway cobra-head streetlamp (concrete plinth + tapered pole + curved mast arm + housing)
+ * plus matching warm lens geometry.
+ */
+function buildCobraStreetlampGeometries(): { structure: THREE.BufferGeometry; lens: THREE.BufferGeometry } {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Concrete anchor pedestal (extends -0.35m into ground so zero floating on sloped verges)
+  const plinth = new THREE.CylinderGeometry(0.24, 0.28, 1.0, 8);
+  plinth.translate(0, 0.15, 0);
+  parts.push(tintGeometry(plinth, 0x9b9890));
+
+  // Galvanized base bolt flange
+  const flange = new THREE.CylinderGeometry(0.18, 0.21, 0.08, 8);
+  flange.translate(0, 0.69, 0);
+  parts.push(tintGeometry(flange, 0x707882));
+
+  // Tapered galvanized shaft (y = 0.72..7.55)
+  const shaft = new THREE.CylinderGeometry(0.072, 0.135, 6.85, 8);
+  shaft.translate(0, 4.14, 0);
+  parts.push(tintGeometry(shaft, 0xb2bac2));
+
+  // Swept curved gooseneck mast arm reaching out over the roadway (+Z)
+  const armPts = [
+    new THREE.Vector3(0, 7.25, 0.0),
+    new THREE.Vector3(0, 7.62, 0.35),
+    new THREE.Vector3(0, 7.90, 0.85),
+    new THREE.Vector3(0, 8.02, 1.45),
+    new THREE.Vector3(0, 7.98, 2.15),
+  ];
+  const arm = buildTaperedBranchTube(armPts, [0.064, 0.056, 0.050, 0.044, 0.040], 6, 0.5, 0.84, 0.92);
+  parts.push(tintGeometry(arm, 0xaab2ba));
+
+  // Die-cast aerodynamic cobra-head luminaire housing
+  const neck = new THREE.BoxGeometry(0.20, 0.12, 0.38);
+  neck.translate(0, 7.97, 2.24);
+  const head = new THREE.CylinderGeometry(0.20, 0.26, 0.14, 8);
+  head.scale(0.88, 1.0, 1.75);
+  head.translate(0, 7.98, 2.60);
+  parts.push(tintGeometry(neck, 0x5c646e), tintGeometry(head, 0x67707b));
+
+  const structure = mergeColoredParts(parts);
+
+  // Warm glass diffuser lens tucked cleanly beneath the cobra head
+  const lens = new THREE.BoxGeometry(0.32, 0.06, 0.58);
+  lens.translate(0, 7.89, 2.62);
+
+  return { structure, lens };
+}
+
+/**
+ * Multi-tone realistic safety traffic cone with weighted dark rubber base + twin white reflective collars.
+ */
+function buildTrafficConeGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  const base = new THREE.BoxGeometry(0.42, 0.055, 0.42);
+  base.translate(0, 0.0275, 0);
+  parts.push(tintGeometry(base, 0x22252a));
+
+  const segs: readonly [y0: number, y1: number, r0: number, r1: number, hex: number][] = [
+    [0.05, 0.43, 0.165, 0.105, 0xf96316],
+    [0.43, 0.52, 0.105, 0.091, 0xf4f6f8], // lower white retroreflective collar
+    [0.52, 0.59, 0.091, 0.080, 0xf96316],
+    [0.59, 0.68, 0.080, 0.066, 0xf4f6f8], // upper white retroreflective collar
+    [0.68, 0.78, 0.066, 0.044, 0xf96316],
+  ];
+  for (const [y0, y1, r0, r1, hex] of segs) {
+    const g = new THREE.CylinderGeometry(r1, r0, y1 - y0, 10);
+    g.translate(0, (y0 + y1) * 0.5, 0);
+    parts.push(tintGeometry(g, hex));
+  }
+
+  return mergeColoredParts(parts);
+}
+
+/**
+ * Slender white roadside highway delineator post with amber retroreflective band.
+ */
+function buildDelineatorPostGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const foot = new THREE.BoxGeometry(0.11, 0.44, 0.055);
+  foot.translate(0, -0.13, 0);
+  const body = new THREE.BoxGeometry(0.085, 0.72, 0.036);
+  body.translate(0, 0.44, 0);
+  const band = new THREE.BoxGeometry(0.09, 0.17, 0.042);
+  band.translate(0, 0.88, 0);
+  const cap = new THREE.BoxGeometry(0.085, 0.08, 0.036);
+  cap.translate(0, 1.0, 0);
+  parts.push(
+    tintGeometry(foot, 0x2a2d33),
+    tintGeometry(body, 0xeaeef2),
+    tintGeometry(band, 0xf5a614),
+    tintGeometry(cap, 0xeaeef2),
+  );
+  return mergeColoredParts(parts);
 }
 
 /**
@@ -66,16 +962,13 @@ function buildProfilePrism(
     }
   }
 
-  // Close vertical end caps if elevated.
   const [xStart, yStart] = profile[0];
   if (yStart > 0.005) {
-    // -X outward cap
     pushTri(xStart, 0, z0, 0, 0, xStart, 0, z1, widthZ / 4, 0, xStart, yStart, z0, 0, yStart / 4);
     pushTri(xStart, 0, z1, widthZ / 4, 0, xStart, yStart, z1, widthZ / 4, yStart / 4, xStart, yStart, z0, 0, yStart / 4);
   }
   const [xEnd, yEnd] = profile[profile.length - 1];
   if (yEnd > 0.005) {
-    // +X outward cap
     pushTri(xEnd, 0, z0, 0, 0, xEnd, yEnd, z0, 0, yEnd / 4, xEnd, 0, z1, widthZ / 4, 0);
     pushTri(xEnd, 0, z1, widthZ / 4, 0, xEnd, yEnd, z0, 0, yEnd / 4, xEnd, yEnd, z1, widthZ / 4, yEnd / 4);
   }
@@ -102,10 +995,35 @@ function buildProfilePrism(
   return { geometry, collider };
 }
 
+/** Adds a structural vertical steel I-beam column (flanges + web + concrete plinth base) into `batcher`. */
+function addIBeamColumn(
+  batcher: MeshBatcher,
+  steelMat: THREE.Material,
+  concreteMat: THREE.Material,
+  x: number,
+  yBase: number,
+  z: number,
+  height: number,
+  size = 0.44,
+  plinthHeight = 0.42,
+): void {
+  if (plinthHeight > 0) {
+    batcher.slab(concreteMat, size + 0.24, plinthHeight, size + 0.24, x, yBase, z);
+  }
+  const colY = yBase + plinthHeight;
+  const colH = Math.max(0.2, height - plinthHeight);
+  const flangeT = size * 0.18;
+  const webT = size * 0.16;
+  batcher.slab(steelMat, size, colH, flangeT, x, colY, z - size * 0.41);
+  batcher.slab(steelMat, size, colH, flangeT, x, colY, z + size * 0.41);
+  batcher.slab(steelMat, webT, colH, size * 0.82, x, colY, z);
+}
+
 /**
- * Builds all roadside buildings, Blend Garage Exterior, Crash-Test & Stunt Proving Grounds obstacles,
- * highway overhead gantries, instanced trees/boulders/streetlamps/guardrails/cones, and returns their
- * exact matching physics colliders.
+ * Builds all roadside buildings, Blend Garage HQ Exterior, Crash-Test & Stunt Proving Grounds,
+ * steel-truss highway overhead gantries, realistic multi-part instanced conifers/oaks/grass/shrubs,
+ * sculpted canyon boulders, W-beam guardrails, cobra-head streetlamps, chevrons & cones,
+ * and returns their exact matching physics colliders.
  */
 export function buildWorldProps(
   network: RoadNetwork,
@@ -127,28 +1045,239 @@ export function buildWorldProps(
     return g;
   };
 
-  // --- Shared Materials ---
-  const concreteMat = trackMat(new THREE.MeshStandardMaterial({ name: 'concrete', map: textures.concrete, roughness: 0.88, metalness: 0.04 }));
-  const hazardMat = trackMat(new THREE.MeshStandardMaterial({ name: 'hazard', map: textures.hazard, roughness: 0.58, metalness: 0.08 }));
-  const corrugatedMat = trackMat(new THREE.MeshStandardMaterial({ name: 'corrugated', map: textures.corrugated, color: 0xb9c0c8, roughness: 0.62, metalness: 0.35 }));
-  const facadeMat = trackMat(new THREE.MeshStandardMaterial({ name: 'facade', map: textures.buildingFacade, roughness: 0.55, metalness: 0.25 }));
-  const steelDarkMat = trackMat(new THREE.MeshStandardMaterial({ name: 'steel-dark', color: 0x2a3038, roughness: 0.48, metalness: 0.68 }));
-  const steelGalvMat = trackMat(new THREE.MeshStandardMaterial({ name: 'steel-galv', color: 0x9aa2ab, roughness: 0.42, metalness: 0.78 }));
-  const accentAmberMat = trackMat(new THREE.MeshStandardMaterial({ name: 'accent-amber', color: 0xe5a823, roughness: 0.44, metalness: 0.18 }));
-  const roofDarkMat = trackMat(new THREE.MeshStandardMaterial({ name: 'roof-dark', color: 0x353b44, roughness: 0.78, metalness: 0.2 }));
-  const glassMat = trackMat(new THREE.MeshStandardMaterial({ name: 'arch-glass', color: 0x628fb2, roughness: 0.16, metalness: 0.45 }));
-  const coneOrangeMat = trackMat(new THREE.MeshStandardMaterial({ name: 'cone-orange', color: 0xf96316, roughness: 0.52, metalness: 0.04 }));
-  const lampGlowMat = trackMat(new THREE.MeshStandardMaterial({ name: 'lamp-glow', color: 0xfff3d4, emissive: 0xffd996, emissiveIntensity: 1.6, roughness: 0.3 }));
+  // Create bespoke botanical, rock, architectural, and infrastructure textures;
+  // register in `textures.all` so `OpenWorld.dispose()` cleanly disposes every GPU texture.
+  const maxAniso = textures.concrete?.anisotropy ?? 4;
+  const craftTex = createFoliageAndPropTextures(maxAniso);
+  textures.all.push(...craftTex.all);
 
-  const barkMat = trackMat(new THREE.MeshStandardMaterial({ name: 'tree-bark', color: 0x5c4432, roughness: 0.94 }));
-  const pineMat = trackMat(new THREE.MeshStandardMaterial({ name: 'pine-foliage', color: 0x2f5935, roughness: 0.88 }));
-  const oakMat = trackMat(new THREE.MeshStandardMaterial({ name: 'oak-foliage', color: 0x4b7738, roughness: 0.86 }));
-  const boulderMat = trackMat(new THREE.MeshStandardMaterial({ name: 'boulder-rock', color: 0x77736b, roughness: 0.94 }));
+  // --- Shared Photorealistic PBR Materials ---
+  const concreteMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'arch-concrete',
+      map: craftTex.archConcrete,
+      normalMap: craftTex.archConcreteNormal,
+      normalScale: new THREE.Vector2(0.75, 0.75),
+      roughness: 0.90,
+      metalness: 0.03,
+    }),
+  );
+  const crashHazardMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'crash-hazard',
+      map: craftTex.crashHazard,
+      roughness: 0.64,
+      metalness: 0.06,
+    }),
+  );
+  const claddingMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'dark-cladding',
+      map: craftTex.cladding,
+      normalMap: craftTex.claddingNormal,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      roughness: 0.56,
+      metalness: 0.42,
+    }),
+  );
+  const lightCladdingMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'light-cladding',
+      map: textures.corrugated,
+      normalMap: craftTex.claddingNormal,
+      normalScale: new THREE.Vector2(0.55, 0.55),
+      color: 0xaab0b8,
+      roughness: 0.62,
+      metalness: 0.34,
+    }),
+  );
+  const bayDoorMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'bay-door',
+      map: craftTex.bayDoor,
+      roughness: 0.48,
+      metalness: 0.44,
+    }),
+  );
+  const glassWindowMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'curtain-glass',
+      map: craftTex.glassWindow,
+      roughness: 0.14,
+      metalness: 0.58,
+      envMapIntensity: 1.35,
+    }),
+  );
+  const steelDarkMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'steel-dark',
+      color: 0x262b33,
+      roughness: 0.46,
+      metalness: 0.70,
+    }),
+  );
+  const steelGalvMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'steel-galv',
+      color: 0x9aa2ab,
+      roughness: 0.40,
+      metalness: 0.80,
+    }),
+  );
+  const accentAmberMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'accent-amber',
+      color: 0xe2a220,
+      roughness: 0.42,
+      metalness: 0.18,
+    }),
+  );
+  const roofDarkMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'roof-dark',
+      color: 0x333840,
+      roughness: 0.80,
+      metalness: 0.18,
+    }),
+  );
+  const lampGlowMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'lamp-glow',
+      color: 0xfff0cc,
+      emissive: 0xffd284,
+      emissiveIntensity: 1.65,
+      roughness: 0.25,
+    }),
+  );
+  const reflectorAmberMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'reflector-amber',
+      color: 0xffb824,
+      emissive: 0xd98410,
+      emissiveIntensity: 0.55,
+      roughness: 0.22,
+      metalness: 0.35,
+    }),
+  );
+
+  // Botanical, rock, and instanced prop materials
+  const barkMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'tree-bark',
+      map: craftTex.bark,
+      normalMap: craftTex.barkNormal,
+      normalScale: new THREE.Vector2(1.0, 1.0),
+      vertexColors: true,
+      roughness: 0.94,
+      metalness: 0.0,
+    }),
+  );
+  /**
+   * Preserves custom outward/upward botanical vertex normals on both sides of DoubleSide
+   * foliage cards so backfaces never negate vNormal downward into pitch-black silhouettes.
+   */
+  const preserveFoliageNormals = (mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial => {
+    mat.customProgramCacheKey = () => 'foliage-preserve-botanical-normals-v1';
+    mat.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <normal_fragment_begin>',
+        `float faceDirection = 1.0;
+         vec3 normal = normalize( vNormal );
+         vec3 nonPerturbedNormal = normal;`,
+      );
+    };
+    return mat;
+  };
+
+  const pineCanopyMat = trackMat(
+    preserveFoliageNormals(
+      new THREE.MeshStandardMaterial({
+        name: 'pine-canopy',
+        map: craftTex.pineBough,
+        alphaTest: 0.42,
+        side: THREE.DoubleSide,
+        vertexColors: true,
+        roughness: 0.84,
+        metalness: 0.0,
+      }),
+    ),
+  );
+  const oakCanopyMat = trackMat(
+    preserveFoliageNormals(
+      new THREE.MeshStandardMaterial({
+        name: 'oak-canopy',
+        map: craftTex.oakLeaf,
+        alphaTest: 0.42,
+        side: THREE.DoubleSide,
+        vertexColors: true,
+        roughness: 0.82,
+        metalness: 0.0,
+      }),
+    ),
+  );
+  const grassTuftMat = trackMat(
+    preserveFoliageNormals(
+      new THREE.MeshStandardMaterial({
+        name: 'grass-tuft',
+        map: craftTex.grassTuft,
+        alphaTest: 0.36,
+        side: THREE.DoubleSide,
+        vertexColors: true,
+        roughness: 0.88,
+        metalness: 0.0,
+      }),
+    ),
+  );
+  const boulderMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'canyon-rock',
+      map: craftTex.rock,
+      normalMap: craftTex.rockNormal,
+      normalScale: new THREE.Vector2(1.1, 1.1),
+      vertexColors: true,
+      roughness: 0.92,
+      metalness: 0.02,
+    }),
+  );
+  const guardrailBeamMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'guardrail-wbeam',
+      map: craftTex.guardrail,
+      roughness: 0.38,
+      metalness: 0.78,
+    }),
+  );
+  const vertexMetalMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'inst-vertex-metal',
+      vertexColors: true,
+      roughness: 0.46,
+      metalness: 0.62,
+    }),
+  );
+  const vertexPolymerMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'inst-vertex-polymer',
+      vertexColors: true,
+      roughness: 0.50,
+      metalness: 0.06,
+    }),
+  );
+  const chevronSignMat = trackMat(
+    new THREE.MeshStandardMaterial({
+      name: 'chevron-sign',
+      map: craftTex.chevronSign,
+      roughness: 0.38,
+      metalness: 0.14,
+    }),
+  );
 
   const batcher = new MeshBatcher();
-  batcher.useWorldUv(concreteMat, 4);
-  batcher.useWorldUv(hazardMat, 2.6);
-  batcher.useWorldUv(corrugatedMat, 5);
+  batcher.useWorldUv(concreteMat, 4.2);
+  batcher.useWorldUv(crashHazardMat, 2.6);
+  batcher.useWorldUv(claddingMat, 4.5);
+  batcher.useWorldUv(lightCladdingMat, 5.0);
+  // Note: bayDoorMat and glassWindowMat keep explicit per-panel UVs (no worldUv).
 
   const addSolidBox = (
     id: string,
@@ -177,7 +1306,7 @@ export function buildWorldProps(
   };
 
   // -------------------------------------------------------------------------
-  // 1. BLEND GARAGE EXTERIOR FLAGSHIP BUILDING (behind spawn at Z = -34)
+  // 1. BLEND GARAGE HQ — MODERN CALIFORNIA MOTORSPORT SHOP (behind spawn at Z = -34)
   // -------------------------------------------------------------------------
   {
     const gx = 0;
@@ -185,38 +1314,115 @@ export function buildWorldProps(
     const gw = 44;
     const gh = 10.5;
     const gd = 20;
+    const frontZ = gz + gd * 0.5; // -24
 
-    // Main workshop shell + corrugated upper fascia + roof parapet.
-    batcher.slab(corrugatedMat, gw, gh, gd, gx, 0, gz);
-    batcher.slab(steelDarkMat, gw + 1.2, 1.3, gd + 1.2, gx, gh, gz);
-    batcher.slab(accentAmberMat, gw + 1.4, 0.45, gd + 1.4, gx, gh - 0.55, gz);
+    // Lower board-formed weathered concrete wainscot (y = 0..2.7m)
+    batcher.slab(concreteMat, gw + 0.16, 2.7, gd + 0.16, gx, 0, gz);
+    // Upper dark charcoal architectural ribbed steel cladding (y = 2.7..10.5m)
+    batcher.slab(claddingMat, gw, gh - 2.7, gd, gx, 2.7, gz);
+    // Heavy roof parapet fascia & motorsport amber accent band
+    batcher.slab(steelDarkMat, gw + 1.1, 1.15, gd + 1.1, gx, gh, gz);
+    batcher.slab(roofDarkMat, gw - 0.6, 0.3, gd - 0.6, gx, gh + 0.85, gz);
+    batcher.slab(accentAmberMat, gw + 1.25, 0.34, gd + 1.25, gx, gh - 0.38, gz);
 
-    // Front workshop bay facade facing +Z toward the Spawn Plaza.
-    batcher.slab(facadeMat, gw - 2, 7.6, 0.4, gx, 0, gz + gd * 0.5 + 0.12);
-
-    // Cantilevered entrance canopy over the bays.
-    batcher.slab(steelDarkMat, 36, 0.55, 5.5, gx, 5.4, gz + gd * 0.5 + 2.7);
-    for (const px of [-16, -5.5, 5.5, 16]) {
-      batcher.slab(steelDarkMat, 0.45, 5.4, 0.45, px, 0, gz + gd * 0.5 + 5.1);
+    // Structural concrete & steel vertical pilaster piers articulating the front elevation
+    for (const px of [-21.4, -17.3, -8.7, -4.3, 4.3, 8.7, 17.3, 21.4]) {
+      batcher.slab(concreteMat, 0.9, 5.2, 0.45, px, 0, frontZ + 0.18);
+      batcher.slab(steelDarkMat, 0.42, 5.5, 0.38, px, 5.2, frontZ + 0.16);
+    }
+    // Corner architectural steel columns wrapping all 4 corners
+    for (const cx of [-gw * 0.5, gw * 0.5]) {
+      for (const cz of [gz - gd * 0.5, frontZ]) {
+        batcher.slab(steelDarkMat, 0.65, gh + 1.1, 0.65, cx, 0, cz);
+      }
     }
 
-    // Illuminated Blend Garage header sign on top of the front fascia.
-    const signMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.garageHeader, roughness: 0.4, metalness: 0.15 }));
+    // 3 Recessed Motorsport Roll-Up Workshop Bay Doors (x = -13, 0, +13)
+    for (const bx of [-13, 0, 13]) {
+      // Recessed dark steel portal jambs + deep I-beam lintel header
+      batcher.slab(steelDarkMat, 7.6, 0.42, 0.55, bx, 4.68, frontZ + 0.20);
+      batcher.slab(steelDarkMat, 0.30, 4.7, 0.50, bx - 3.65, 0, frontZ + 0.18);
+      batcher.slab(steelDarkMat, 0.30, 4.7, 0.50, bx + 3.65, 0, frontZ + 0.18);
+      // Sectional insulated roll-up garage door with vision glass row
+      batcher.panel(bayDoorMat, 7.0, 4.65, bx, 2.34, frontZ + 0.14, 0);
+      // Safety bollards flanking each bay doorway
+      for (const side of [-4.05, 4.05]) {
+        batcher.cyl(accentAmberMat, 0.11, 0.92, bx + side, 0.46, frontZ + 0.72, 'y', { segments: 10 });
+        batcher.cyl(steelDarkMat, 0.13, 0.14, bx + side, 0.07, frontZ + 0.72, 'y', { segments: 10 });
+      }
+      // Exterior gooseneck sconce lamp mounted above bay lintel
+      batcher.slab(steelDarkMat, 0.12, 0.12, 0.65, bx, 5.18, frontZ + 0.42);
+      batcher.cyl(steelDarkMat, 0.22, 0.14, bx, 5.08, frontZ + 0.72, 'y', { radiusTop: 0.08, segments: 10 });
+      batcher.cyl(lampGlowMat, 0.16, 0.06, bx, 5.0, frontZ + 0.72, 'y', { segments: 10 });
+    }
+
+    // Upper mezzanine architectural curtain-wall showroom windows (front wings + sides)
+    for (const wx of [-14.2, 14.2]) {
+      batcher.slab(steelDarkMat, 11.4, 3.05, 0.36, wx, 6.25, frontZ + 0.14);
+      batcher.panel(glassWindowMat, 10.9, 2.65, wx, 7.77, frontZ + 0.34, 0);
+      // Projecting horizontal steel sun-shade eyebrow louver
+      batcher.slab(steelDarkMat, 11.6, 0.12, 0.85, wx, 9.25, frontZ + 0.46);
+    }
+    // Side showroom windows on east (+X) & west (-X) elevations
+    for (const side of [-1, 1]) {
+      const sx = side * (gw * 0.5 + 0.14);
+      batcher.slab(steelDarkMat, 0.30, 2.9, 11.4, sx, 6.25, gz + 1.5);
+      batcher.panel(glassWindowMat, 10.8, 2.55, sx + side * 0.17, 7.70, gz + 1.5, side > 0 ? Math.PI / 2 : -Math.PI / 2);
+    }
+
+    // Cantilevered Steel Entrance Canopy over the bays (exact original column footprint!)
+    const canopyZ = frontZ + 2.75;
+    batcher.slab(steelDarkMat, 38.4, 0.48, 5.5, gx, 5.38, canopyZ);
+    batcher.slab(accentAmberMat, 38.6, 0.14, 0.12, gx, 5.72, frontZ + 5.52);
+    // Exposed underside steel purlins & warm recessed canopy downlights
+    for (let cx = -16; cx <= 16; cx += 4) {
+      batcher.slab(steelDarkMat, 0.18, 0.24, 5.3, cx, 5.14, canopyZ);
+    }
+    for (const lx of [-15, -9, -3, 3, 9, 15]) {
+      batcher.slab(lampGlowMat, 1.4, 0.06, 0.34, lx, 5.32, canopyZ + 0.4);
+    }
+    // 4 Structural I-beam canopy support columns + diagonal tension tie-rods to upper fascia
+    for (const px of [-16, -5.5, 5.5, 16]) {
+      addIBeamColumn(batcher, steelDarkMat, concreteMat, px, 0, frontZ + 5.1, 5.4, 0.42, 0.45);
+      batcher.beam(steelGalvMat, [px, 5.75, frontZ + 5.0], [px, 8.75, frontZ + 0.15], 0.075, 0.075);
+    }
+
+    // Rooftop industrial HVAC units, exhaust ductwork & parapet railing detail
+    for (const hx of [-12.5, 11.5]) {
+      batcher.slab(steelGalvMat, 4.2, 1.55, 2.8, hx, gh + 1.1, gz - 1.5);
+      batcher.slab(steelDarkMat, 3.6, 0.85, 0.14, hx, gh + 1.45, gz - 0.06);
+      batcher.slab(steelGalvMat, 1.2, 0.65, 3.6, hx + 2.2, gh + 1.15, gz - 1.8);
+    }
+    batcher.slab(roofDarkMat, 3.4, 2.1, 3.2, 0, gh + 1.1, gz - 5.5);
+
+    // Illuminated BLEND GARAGE fascia header sign in a recessed dark steel shadow box
+    batcher.slab(steelDarkMat, 18.6, 4.65, 0.42, gx, 7.05, frontZ + 0.48);
+    for (const lx of [-6.5, -2.2, 2.2, 6.5]) {
+      batcher.slab(steelDarkMat, 0.10, 0.10, 0.72, lx, 11.45, frontZ + 0.92);
+      batcher.slab(lampGlowMat, 0.42, 0.06, 0.18, lx, 11.38, frontZ + 1.22);
+    }
+    const signMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.garageHeader, roughness: 0.36, metalness: 0.16 }));
     const signGeo = trackGeo(new THREE.PlaneGeometry(18, 4.2));
     const signMesh = new THREE.Mesh(signGeo, signMat);
-    signMesh.position.set(gx, 9.2, gz + gd * 0.5 + 0.75);
+    signMesh.position.set(gx, 9.38, frontZ + 0.72);
     signMesh.updateMatrix();
     signMesh.matrixAutoUpdate = false;
     group.add(signMesh);
 
     addSolidBox('building-blend-garage', 'building', 'concrete', gw, gh + 1.5, gd, gx, (gh + 1.5) * 0.5, gz);
 
-    // Side Service Canopy (west side of plaza at X = -34, Z = -14).
-    batcher.slab(steelDarkMat, 14, 0.6, 18, -34, 4.9, -14);
-    batcher.slab(accentAmberMat, 14.3, 0.3, 18.3, -34, 5.5, -14);
+    // Side Service / Pit Canopy (west side of plaza at X = -34, Z = -14)
+    batcher.slab(steelDarkMat, 14.4, 0.58, 18.4, -34, 4.9, -14);
+    batcher.slab(roofDarkMat, 13.8, 0.25, 17.8, -34, 5.45, -14);
+    batcher.slab(accentAmberMat, 14.6, 0.28, 18.6, -34, 5.48, -14);
+    // Exposed roof cross purlins & pit canopy bay lights
+    for (const pz of [-20, -16, -12, -8]) {
+      batcher.slab(steelDarkMat, 13.6, 0.22, 0.20, -34, 4.68, pz);
+      batcher.slab(lampGlowMat, 2.2, 0.06, 0.35, -34, 4.86, pz);
+    }
     for (const px of [-40, -28]) {
       for (const pz of [-21, -7]) {
-        batcher.slab(steelDarkMat, 0.55, 4.9, 0.55, px, 0, pz);
+        addIBeamColumn(batcher, steelDarkMat, concreteMat, px, 0, pz, 4.9, 0.52, 0.55);
         addSolidBox(`canopy-col-${px}-${pz}`, 'pillar', 'metal', 0.65, 4.9, 0.65, px, 2.45, pz);
       }
     }
@@ -228,31 +1434,47 @@ export function buildWorldProps(
   {
     // (a) Main Frontal Crash Impact Wall at X = 208, Z = +20.
     batcher.slab(concreteMat, 2.6, 3.4, 14.4, 208, 0, 20);
-    // Hazard-striped impact face facing oncoming traffic (-X).
-    batcher.slab(hazardMat, 0.16, 3.1, 13.8, 206.64, 0.15, 20);
-    // Heavy rear concrete buttresses.
+    batcher.slab(steelDarkMat, 2.78, 0.24, 14.6, 208, 3.38, 20); // Steel top cap beam
+    // Scuffed rubber-marked hazard-chevron impact apron facing oncoming traffic (-X)
+    batcher.slab(crashHazardMat, 0.16, 3.12, 13.9, 206.64, 0.14, 20);
+    // Steel side corner guard angles framing the impact apron
+    batcher.slab(steelDarkMat, 0.24, 3.42, 0.24, 206.66, 0, 12.88);
+    batcher.slab(steelDarkMat, 0.24, 3.42, 0.24, 206.66, 0, 27.12);
+    // Heavy steel crash-test backing truss buttresses + concrete rear anchor blocks
     for (const bz of [14.5, 20, 25.5]) {
-      batcher.slab(concreteMat, 3.2, 2.4, 1.1, 210.8, 0, bz);
+      batcher.slab(concreteMat, 2.8, 1.0, 1.15, 211.0, 0, bz);
+      batcher.beam(steelDarkMat, [209.25, 3.25, bz], [212.1, 0.85, bz], 0.34, 0.34);
+      batcher.beam(steelDarkMat, [209.25, 1.85, bz], [211.2, 0.85, bz], 0.24, 0.24);
     }
+    // Horizontal cross-beam uniting rear steel buttresses
+    batcher.slab(steelDarkMat, 0.28, 0.28, 11.4, 210.6, 2.05, 20);
     addSolidBox('pg-main-crash-wall', 'wall', 'concrete', 2.8, 3.4, 14.4, 208, 1.7, 20);
 
-    // Impact Wall overhead sign.
-    const wallSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.impactWallSign, roughness: 0.45 }));
+    // Impact Wall overhead sign + steel truss support frame + warning beacons
+    const wallSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.impactWallSign, roughness: 0.42 }));
     const wallSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(7.2, 3.4)), wallSignMat);
     wallSign.position.set(206.5, 5.4, 20);
     wallSign.rotation.y = -Math.PI / 2;
     wallSign.updateMatrix();
     wallSign.matrixAutoUpdate = false;
     group.add(wallSign);
-    batcher.slab(steelDarkMat, 0.3, 4.2, 0.3, 207.2, 3.2, 16.8);
-    batcher.slab(steelDarkMat, 0.3, 4.2, 0.3, 207.2, 3.2, 23.2);
+    batcher.slab(steelDarkMat, 0.14, 3.55, 7.38, 206.62, 3.62, 20);
+    batcher.slab(steelDarkMat, 0.28, 4.2, 0.28, 207.2, 3.2, 16.8);
+    batcher.slab(steelDarkMat, 0.28, 4.2, 0.28, 207.2, 3.2, 23.2);
+    batcher.beam(steelDarkMat, [207.2, 3.6, 16.8], [207.2, 6.8, 23.2], 0.12, 0.12);
+    batcher.beam(steelDarkMat, [207.2, 6.8, 16.8], [207.2, 3.6, 23.2], 0.12, 0.12);
+    batcher.cyl(reflectorAmberMat, 0.16, 0.24, 206.6, 7.42, 16.8, 'y', { segments: 10 });
+    batcher.cyl(reflectorAmberMat, 0.16, 0.24, 206.6, 7.42, 23.2, 'y', { segments: 10 });
 
     // (b) Offset Small-Overlap Concrete Barrier Block at X = 208, Z = +52.
     batcher.slab(concreteMat, 2.6, 2.8, 4.8, 208, 0, 52);
-    batcher.slab(hazardMat, 0.16, 2.5, 4.4, 206.64, 0.15, 52);
+    batcher.slab(steelDarkMat, 2.75, 0.20, 4.95, 208, 2.78, 52);
+    batcher.slab(crashHazardMat, 0.16, 2.55, 4.45, 206.64, 0.12, 52);
+    batcher.beam(steelDarkMat, [209.2, 2.65, 50.6], [211.2, 0.2, 50.6], 0.28, 0.28);
+    batcher.beam(steelDarkMat, [209.2, 2.65, 53.4], [211.2, 0.2, 53.4], 0.28, 0.28);
     addSolidBox('pg-offset-crash-wall', 'wall', 'concrete', 2.8, 2.8, 4.8, 208, 1.4, 52);
 
-    // (c) 3 Heavy Hazard-Striped Crash-Test Steel/Concrete Pillars (Pole Impact Test Zone).
+    // (c) 3 Heavy Steel-Banded Hazard Crash-Test Pillars (Pole Impact Test Zone).
     const pillarCoords: readonly [number, number][] = [
       [154, 44],
       [174, 57],
@@ -260,9 +1482,15 @@ export function buildWorldProps(
     ];
     for (let i = 0; i < pillarCoords.length; i++) {
       const [px, pz] = pillarCoords[i];
-      batcher.cyl(hazardMat, 0.56, 3.6, px, 1.8, pz, 'y', { segments: 18 });
-      batcher.cyl(steelDarkMat, 0.72, 0.25, px, 0.125, pz, 'y', { segments: 18 });
-      batcher.cyl(accentAmberMat, 0.6, 0.18, px, 3.65, pz, 'y', { segments: 18 });
+      // Core scuffed hazard cylinder
+      batcher.cyl(crashHazardMat, 0.56, 3.6, px, 1.8, pz, 'y', { segments: 18 });
+      // Heavy bolted dark-steel anchor flange & collar rings
+      batcher.cyl(steelDarkMat, 0.80, 0.14, px, 0.07, pz, 'y', { segments: 16 });
+      batcher.cyl(steelDarkMat, 0.68, 0.22, px, 0.24, pz, 'y', { segments: 16 });
+      batcher.cyl(steelDarkMat, 0.60, 0.16, px, 1.25, pz, 'y', { segments: 16 });
+      batcher.cyl(steelDarkMat, 0.60, 0.16, px, 2.45, pz, 'y', { segments: 16 });
+      batcher.cyl(steelDarkMat, 0.62, 0.18, px, 3.55, pz, 'y', { segments: 16 });
+      batcher.cyl(reflectorAmberMat, 0.58, 0.14, px, 3.70, pz, 'y', { segments: 16 });
       const cylCol: CylinderColliderDef = {
         type: 'cylinder',
         id: `pg-crash-pillar-${i}`,
@@ -277,7 +1505,7 @@ export function buildWorldProps(
       colliders.push(cylCol);
     }
 
-    // (d) Smooth Curved Stunt Launch Ramp + Landing Wedge at Z = -24.
+    // (d) Smooth Curved Stunt Launch Ramp + Landing Wedge at Z = -24 (exact physics Trimesh preserved!).
     const launchProfile: [number, number][] = [];
     const launchSteps = 10;
     const launchStart = 104;
@@ -285,7 +1513,6 @@ export function buildWorldProps(
     const launchHeight = 2.85;
     for (let i = 0; i <= launchSteps; i++) {
       const t = i / launchSteps;
-      // Gentle lead-in curve so low-slung supercars glide smoothly without nose scrape.
       launchProfile.push([launchStart + t * launchLen, launchHeight * Math.pow(t, 1.42)]);
     }
     const launchBuilt = buildProfilePrism(launchProfile, -24, 10.4, 'pg-launch-ramp', 'ramp', 'concrete');
@@ -298,10 +1525,11 @@ export function buildWorldProps(
     group.add(launchMesh);
     colliders.push(launchBuilt.collider);
 
-    // Hazard stripe trim along launch ramp top edges.
-    batcher.slab(hazardMat, 0.4, launchHeight + 0.12, 10.6, launchStart + launchLen + 0.18, 0, -24);
+    // Hazard-striped lip trim + rear steel girder bracing under launch lip
+    batcher.slab(crashHazardMat, 0.42, launchHeight + 0.10, 10.6, launchStart + launchLen + 0.19, 0, -24);
+    batcher.slab(steelDarkMat, 0.35, 0.16, 10.8, launchStart + launchLen + 0.22, launchHeight, -24);
 
-    // Landing down-ramp (X = 148 -> 178) so airtime lands butter-smoothly.
+    // Landing down-ramp (X = 148 -> 178)
     const landProfile: [number, number][] = [
       [148, 2.25],
       [152, 2.25],
@@ -317,20 +1545,21 @@ export function buildWorldProps(
     landMesh.matrixAutoUpdate = false;
     group.add(landMesh);
     colliders.push(landBuilt.collider);
+    batcher.slab(crashHazardMat, 0.35, 2.25, 11.5, 147.82, 0, -24);
 
-    // Ramp directional sign beside approach.
-    const rampSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.rampSign, roughness: 0.45 }));
+    // Ramp directional sign beside approach with dual steel posts & backing plate
+    const rampSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.rampSign, roughness: 0.42 }));
     const rampSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(4.4, 2.2)), rampSignMat);
     rampSign.position.set(100, 3.0, -32);
     rampSign.rotation.y = -Math.PI / 2;
     rampSign.updateMatrix();
     rampSign.matrixAutoUpdate = false;
     group.add(rampSign);
-    batcher.slab(steelDarkMat, 0.22, 3.2, 0.22, 100.15, 0, -32);
+    batcher.slab(steelDarkMat, 0.10, 2.32, 4.52, 100.08, 1.84, -32);
+    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 100.16, 0, -33.5);
+    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 100.16, 0, -30.5);
 
-    // (e) Suspension Rumble & Speed-Bump Strip at Z = -56.
-    // 8 smooth full-width speed bumps + 6 staggered left/right wheel articulation bumps,
-    // combined into one single mesh and one combined TrimeshColliderDef.
+    // (e) Suspension Rumble & Speed-Bump Strip at Z = -56 (exact physics Trimesh preserved!).
     const bumpSpecs: { x: number; z: number; w: number; h: number }[] = [];
     for (let i = 0; i < 8; i++) {
       bumpSpecs.push({ x: 102 + i * 8.5, z: -56, w: 9.6, h: 0.15 });
@@ -370,7 +1599,7 @@ export function buildWorldProps(
     combinedBumpGeo.setIndex(new THREE.BufferAttribute(combinedBumpIdx, 1));
     combinedBumpGeo.computeVertexNormals();
 
-    const bumpMesh = new THREE.Mesh(combinedBumpGeo, hazardMat);
+    const bumpMesh = new THREE.Mesh(combinedBumpGeo, crashHazardMat);
     bumpMesh.name = 'pg-suspension-bumps';
     bumpMesh.receiveShadow = true;
     bumpMesh.matrixAutoUpdate = false;
@@ -387,43 +1616,79 @@ export function buildWorldProps(
       indices: new Uint32Array(combinedBumpIdx),
     });
 
-    // (f) Slalom Chicane Jersey Barriers at Z = +88 (5 alternating chicane gates).
+    // (f) Slalom Chicane Beveled Concrete Jersey Barriers at Z = +88 (5 alternating chicane gates).
     const slalomXs = [106, 130, 154, 178, 202];
     for (let i = 0; i < slalomXs.length; i++) {
       const bx = slalomXs[i];
       const bz = i % 2 === 0 ? 82.5 : 93.5;
-      batcher.slab(concreteMat, 1.0, 1.1, 7.6, bx, 0, bz);
-      batcher.slab(hazardMat, 1.06, 0.22, 7.64, bx, 0.88, bz);
+      // 2 joined 3.75m precast New Jersey F-shape concrete segments with visible expansion joint + forklift pockets
+      for (const segOff of [-1.9, 1.9]) {
+        batcher.add(concreteMat, buildJerseyBarrierGeometry(3.72, 1.12, 0.96), bx, 0, bz + segOff);
+        // Dark forklift notch recesses at base
+        for (const notch of [-0.95, 0.95]) {
+          batcher.slab(steelDarkMat, 0.98, 0.11, 0.36, bx, 0.0, bz + segOff + notch);
+        }
+      }
+      // Scuffed hazard top rail & amber reflector markers
+      batcher.slab(crashHazardMat, 0.34, 0.16, 7.56, bx, 1.02, bz);
+      batcher.slab(reflectorAmberMat, 0.38, 0.12, 0.24, bx, 1.14, bz - 3.4);
+      batcher.slab(reflectorAmberMat, 0.38, 0.12, 0.24, bx, 1.14, bz + 3.4);
       addSolidBox(`pg-slalom-barrier-${i}`, 'barrier', 'concrete', 1.05, 1.15, 7.65, bx, 0.575, bz);
     }
 
-    const slalomSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.slalomSign, roughness: 0.45 }));
+    const slalomSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.slalomSign, roughness: 0.42 }));
     const slalomSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(4.4, 2.2)), slalomSignMat);
     slalomSign.position.set(92, 3.0, 74);
     slalomSign.rotation.y = -Math.PI / 2;
     slalomSign.updateMatrix();
     slalomSign.matrixAutoUpdate = false;
     group.add(slalomSign);
-    batcher.slab(steelDarkMat, 0.22, 3.2, 0.22, 92.15, 0, 74);
+    batcher.slab(steelDarkMat, 0.10, 2.32, 4.52, 92.08, 1.84, 74);
+    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 92.16, 0, 72.5);
+    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 92.16, 0, 75.5);
 
-    // (g) Crash Test Lab & Observation Tower at X = 229, Z = -24.
-    batcher.slab(corrugatedMat, 18, 9.5, 36, 229, 0, -24);
+    // (g) Crash Test Lab & Glazed Observation Tower at X = 229, Z = -24.
+    batcher.slab(concreteMat, 18.2, 2.5, 36.2, 229, 0, -24);
+    batcher.slab(claddingMat, 18, 7.0, 36, 229, 2.5, -24);
     batcher.slab(steelDarkMat, 18.8, 1.1, 36.8, 229, 9.5, -24);
-    // Glazed observation deck overlooking the ramp & crash wall.
-    batcher.slab(glassMat, 7.5, 3.4, 14, 222.5, 10.6, -24);
-    batcher.slab(roofDarkMat, 8.6, 0.7, 15.2, 222.5, 14.0, -24);
+    batcher.slab(accentAmberMat, 18.95, 0.32, 36.95, 229, 9.12, -24);
+    // Vertical structural steel ribs along West elevation facing proving grounds
+    for (let lz = -40; lz <= -8; lz += 6.4) {
+      batcher.slab(steelDarkMat, 0.38, 9.6, 0.38, 219.95, 0, lz);
+    }
+    // Recessed side service bay door at north end of lab
+    batcher.panel(bayDoorMat, 6.2, 4.4, 219.86, 2.2, -35.5, -Math.PI / 2);
+    // Cantilevered Glazed Observation Deck overlooking the ramp & impact wall
+    batcher.slab(steelDarkMat, 8.2, 0.45, 14.8, 222.5, 10.55, -24);
+    batcher.slab(glassWindowMat, 7.5, 3.3, 14.0, 222.5, 11.0, -24);
+    batcher.slab(roofDarkMat, 8.8, 0.65, 15.6, 222.5, 14.3, -24);
+    // Angled steel cantilever support struts under observation deck
+    for (const sz of [-29.5, -24, -18.5]) {
+      batcher.beam(steelDarkMat, [219.9, 8.5, sz], [218.5, 10.65, sz], 0.24, 0.24);
+    }
+    // Rooftop HVAC + telemetry radar tower mast
+    batcher.slab(steelGalvMat, 3.6, 1.4, 4.2, 231, 10.6, -15);
+    batcher.cyl(steelGalvMat, 0.14, 3.8, 224.5, 16.8, -28.5, 'y', { segments: 8 });
+    batcher.cyl(steelGalvMat, 0.72, 0.18, 224.5, 18.4, -28.5, 'x', { segments: 12 });
     addSolidBox('building-crash-lab', 'building', 'concrete', 18.4, 11, 36.4, 229, 5.5, -24);
 
     const labSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.crashLabBanner, roughness: 0.4 }));
     const labSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(16, 3.8)), labSignMat);
-    labSign.position.set(219.7, 7.6, -24);
+    labSign.position.set(219.65, 7.2, -24);
     labSign.rotation.y = -Math.PI / 2;
     labSign.updateMatrix();
     labSign.matrixAutoUpdate = false;
     group.add(labSign);
+    batcher.slab(steelDarkMat, 0.14, 4.0, 16.3, 219.78, 5.2, -24);
 
-    // Proving Grounds North perimeter concrete barrier wall (Z = -74, X = 80..236).
-    batcher.slab(concreteMat, 156, 1.35, 1.0, 158, 0, -74.5);
+    // Proving Grounds North perimeter beveled concrete Jersey barrier wall (Z = -74.5, X = 80..236).
+    const northWallLen = 156;
+    const northSegs = 26;
+    const segLen = northWallLen / northSegs;
+    for (let i = 0; i < northSegs; i++) {
+      const sx = 80 + (i + 0.5) * segLen;
+      batcher.add(concreteMat, buildJerseyBarrierGeometry(segLen - 0.06, 1.32, 1.02), sx, 0, -74.5, [0, Math.PI / 2, 0]);
+    }
     addSolidBox('pg-north-wall', 'barrier', 'concrete', 156, 1.4, 1.1, 158, 0.7, -74.5);
   }
 
@@ -431,18 +1696,33 @@ export function buildWorldProps(
   // 3. ROADSIDE BUILDINGS & HIGHWAY SERVICE STATION
   // -------------------------------------------------------------------------
   {
-    // Highway Service Station & Pit Canopy along South Straightaway (X = -125, Z = 224).
-    batcher.slab(corrugatedMat, 22, 6.4, 11, -125, 0, 214);
-    batcher.slab(facadeMat, 20, 5.2, 0.35, -125, 0, 219.6);
-    batcher.slab(steelDarkMat, 26, 0.7, 11, -125, 5.2, 232);
-    batcher.slab(accentAmberMat, 26.4, 0.35, 11.4, -125, 5.9, 232);
+    // Highway Service Station & Pit Canopy along South Straightaway (X = -125, Z = 214..232).
+    batcher.slab(concreteMat, 22.3, 1.8, 11.3, -125, 0, 214);
+    batcher.slab(claddingMat, 22, 4.6, 11, -125, 1.8, 214);
+    batcher.slab(steelDarkMat, 22.8, 0.75, 11.8, -125, 6.4, 214);
+    batcher.slab(accentAmberMat, 22.9, 0.25, 11.9, -125, 6.1, 214);
+    // Front storefront glass + service bay door facing highway (+Z)
+    batcher.slab(steelDarkMat, 10.6, 3.6, 0.28, -130.0, 0.6, 219.55);
+    batcher.panel(glassWindowMat, 10.1, 3.2, -130.0, 2.4, 219.72, 0);
+    batcher.panel(bayDoorMat, 6.6, 4.3, -119.2, 2.15, 219.62, 0);
+    batcher.slab(steelDarkMat, 7.0, 0.30, 0.42, -119.2, 4.3, 219.65);
+    // Rooftop AC unit
+    batcher.slab(steelGalvMat, 2.8, 1.0, 2.2, -129, 7.15, 213.5);
+
+    // Pit Service Canopy at Z = 232 with structural I-beam columns (exact original collider positions!)
+    batcher.slab(steelDarkMat, 26.4, 0.72, 11.4, -125, 5.2, 232);
+    batcher.slab(accentAmberMat, 26.7, 0.30, 11.7, -125, 5.88, 232);
+    for (const lx of [-133, -125, -117]) {
+      batcher.slab(lampGlowMat, 3.2, 0.08, 0.6, lx, 5.14, 232);
+    }
     for (const px of [-135, -125, -115]) {
-      batcher.slab(steelDarkMat, 0.55, 5.2, 0.55, px, 0, 232);
+      addIBeamColumn(batcher, steelDarkMat, concreteMat, px, 0, 232, 5.2, 0.50, 0.65);
+      batcher.slab(accentAmberMat, 0.78, 0.16, 0.78, px, 0.50, 232);
       addSolidBox(`service-col-${px}`, 'pillar', 'metal', 0.65, 5.2, 0.65, px, 2.6, 232);
     }
     addSolidBox('building-service-station', 'building', 'concrete', 22.4, 6.8, 11.4, -125, 3.4, 214);
 
-    // Two industrial warehouses framing the valley landscape.
+    // Two detailed industrial warehouses framing the valley landscape.
     const warehouses: readonly { id: string; x: number; z: number; w: number; h: number; d: number; yaw: number }[] = [
       { id: 'warehouse-east', x: 295, z: 165, w: 30, h: 10, d: 18, yaw: 0 },
       { id: 'warehouse-west', x: -190, z: 155, w: 28, h: 9.2, d: 18, yaw: 0.12 },
@@ -450,16 +1730,30 @@ export function buildWorldProps(
     for (const wh of warehouses) {
       const groundY = terrain.sampleHeight(wh.x, wh.z);
       batcher.at(wh.x, groundY, wh.z, wh.yaw, () => {
-        batcher.slab(corrugatedMat, wh.w, wh.h, wh.d, 0, -0.8, 0);
-        batcher.slab(roofDarkMat, wh.w + 0.8, 0.8, wh.d + 0.8, 0, wh.h - 0.8, 0);
-        batcher.slab(accentAmberMat, wh.w + 0.9, 0.35, wh.d + 0.9, 0, wh.h - 1.4, 0);
+        batcher.slab(concreteMat, wh.w + 0.25, 3.0, wh.d + 0.25, 0, -0.8, 0);
+        batcher.slab(lightCladdingMat, wh.w, wh.h - 2.2, wh.d, 0, 2.2, 0);
+        batcher.slab(roofDarkMat, wh.w + 0.9, 0.85, wh.d + 0.9, 0, wh.h - 0.8, 0);
+        batcher.slab(accentAmberMat, wh.w + 1.0, 0.30, wh.d + 1.0, 0, wh.h - 1.35, 0);
+        // Upper clerestory ribbon windows along front & back
+        for (const side of [-1, 1]) {
+          batcher.panel(glassWindowMat, wh.w - 4, 1.6, 0, wh.h - 2.4, side * (wh.d * 0.5 + 0.12), side > 0 ? 0 : Math.PI);
+        }
+        // 2 Recessed loading dock bay doors + steel dock awnings
+        for (const bx of [-wh.w * 0.24, wh.w * 0.24]) {
+          batcher.panel(bayDoorMat, 5.4, 4.2, bx, 1.3, wh.d * 0.5 + 0.18, 0);
+          batcher.slab(steelDarkMat, 6.2, 0.24, 1.8, bx, 3.6, wh.d * 0.5 + 0.95);
+        }
+        // Rooftop exhaust vents
+        for (const vx of [-wh.w * 0.26, 0, wh.w * 0.26]) {
+          batcher.slab(steelGalvMat, 2.0, 1.1, 2.0, vx, wh.h + 0.05, 0);
+        }
       });
       addSolidBox(wh.id, 'building', 'concrete', wh.w, wh.h, wh.d, wh.x, groundY + wh.h * 0.5 - 0.8, wh.z, wh.yaw);
     }
   }
 
   // -------------------------------------------------------------------------
-  // 4. OVERHEAD HIGHWAY & DIRECTIONAL SIGN GANTRIES
+  // 4. STEEL-TRUSS OVERHEAD HIGHWAY & DIRECTIONAL SIGN GANTRIES
   // -------------------------------------------------------------------------
   const addSignGantry = (
     id: string,
@@ -473,36 +1767,79 @@ export function buildWorldProps(
     const baseY = terrain.sampleHeight(cx, cz);
     const clearance = 6.8;
     const halfSpan = span * 0.5;
+    const trussBot = clearance + 0.25;
+    const trussTop = clearance + 1.85;
+    const trussDepth = 0.44;
 
     batcher.at(cx, baseY, cz, yaw, () => {
-      // Left & right steel support towers outside the road.
-      batcher.slab(steelGalvMat, 0.55, clearance + 1.8, 0.55, -halfSpan, -0.3, 0);
-      batcher.slab(steelGalvMat, 0.55, clearance + 1.8, 0.55, halfSpan, -0.3, 0);
-      // Overhead steel truss beam.
-      batcher.slab(steelGalvMat, span + 1.0, 0.55, 0.55, 0, clearance + 0.6, 0);
-      batcher.slab(steelGalvMat, span + 1.0, 0.35, 0.35, 0, clearance + 1.4, 0);
+      // Twin-post steel truss towers + concrete pedestals outside the roadway
+      for (const side of [-1, 1]) {
+        const tx = side * halfSpan;
+        batcher.slab(concreteMat, 1.15, 1.05, 1.65, tx, -0.45, 0);
+        batcher.cyl(steelGalvMat, 0.18, clearance + 1.65, tx, (clearance + 1.65) * 0.5 + 0.4, -trussDepth, 'y', { segments: 10 });
+        batcher.cyl(steelGalvMat, 0.18, clearance + 1.65, tx, (clearance + 1.65) * 0.5 + 0.4, trussDepth, 'y', { segments: 10 });
+        // Tower horizontal rungs & diagonal X-bracing
+        for (let ty = 1.6; ty < clearance + 0.5; ty += 1.6) {
+          batcher.beam(steelGalvMat, [tx, ty, -trussDepth], [tx, ty, trussDepth], 0.10, 0.10);
+          batcher.beam(steelGalvMat, [tx, ty, -trussDepth], [tx, ty + 1.6, trussDepth], 0.08, 0.08);
+          batcher.beam(steelGalvMat, [tx, ty + 1.6, -trussDepth], [tx, ty, trussDepth], 0.08, 0.08);
+        }
+      }
+
+      // 4 Horizontal box-truss chord tubes spanning the road
+      for (const cy of [trussBot, trussTop]) {
+        for (const czOff of [-trussDepth, trussDepth]) {
+          batcher.cyl(steelGalvMat, 0.12, span + 0.9, 0, cy, czOff, 'x', { segments: 10 });
+        }
+      }
+
+      // Warren-truss diagonal web struts across front, back, top, and bottom faces
+      const bays = Math.max(6, Math.round(span / 1.9));
+      const bayW = span / bays;
+      for (let i = 0; i < bays; i++) {
+        const x0 = -halfSpan + i * bayW;
+        const x1 = x0 + bayW;
+        const up = i % 2 === 0;
+        const yA = up ? trussBot : trussTop;
+        const yB = up ? trussTop : trussBot;
+        batcher.beam(steelGalvMat, [x0, yA, -trussDepth], [x1, yB, -trussDepth], 0.085, 0.085);
+        batcher.beam(steelGalvMat, [x0, yA, trussDepth], [x1, yB, trussDepth], 0.085, 0.085);
+        batcher.beam(steelGalvMat, [x0, trussBot, -trussDepth], [x0, trussTop, -trussDepth], 0.085, 0.085);
+        batcher.beam(steelGalvMat, [x0, trussBot, trussDepth], [x0, trussTop, trussDepth], 0.085, 0.085);
+        batcher.beam(steelGalvMat, [x0, trussBot, -trussDepth], [x1, trussBot, trussDepth], 0.075, 0.075);
+        batcher.beam(steelGalvMat, [x0, trussTop, -trussDepth], [x1, trussTop, trussDepth], 0.075, 0.075);
+      }
+
+      // Dark anodized steel sign backing bezels flush behind front/back sign faces
+      const signW = Math.min(13, span * 0.65);
+      batcher.slab(steelDarkMat, signW + 0.24, 3.24, 0.08, 0, clearance - 0.56, -0.46);
+      if (doubleSided) {
+        batcher.slab(steelDarkMat, signW + 0.24, 3.24, 0.08, 0, clearance - 0.56, 0.46);
+      }
     });
 
-    // Sign board facing local -Z (towards approaching driver when yaw aligns with approach) and optionally +Z.
-    const sMat = trackMat(new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.42, metalness: 0.1 }));
-    const sGeo = trackGeo(new THREE.PlaneGeometry(Math.min(13, span * 0.65), 3.1));
-    const front = new THREE.Mesh(sGeo, sMat);
-    front.position.set(cx, baseY + clearance + 1.0, cz);
-    front.rotation.y = yaw + Math.PI;
-    front.translateZ(0.36);
-    front.updateMatrix();
-    front.matrixAutoUpdate = false;
-    group.add(front);
-
+    // Merge front + optional back sign faces into ONE crisp mesh per gantry (halving sign draw calls!)
+    const signW = Math.min(13, span * 0.65);
+    const signH = 3.1;
+    const faceParts: THREE.BufferGeometry[] = [];
+    const frontGeo = new THREE.PlaneGeometry(signW, signH);
+    frontGeo.rotateY(Math.PI);
+    frontGeo.translate(0, 0, -0.52);
+    faceParts.push(frontGeo);
     if (doubleSided) {
-      const back = new THREE.Mesh(sGeo, sMat);
-      back.position.set(cx, baseY + clearance + 1.0, cz);
-      back.rotation.y = yaw;
-      back.translateZ(0.36);
-      back.updateMatrix();
-      back.matrixAutoUpdate = false;
-      group.add(back);
+      const backGeo = new THREE.PlaneGeometry(signW, signH);
+      backGeo.translate(0, 0, 0.52);
+      faceParts.push(backGeo);
     }
+    const mergedSignGeo = trackGeo(mergeColoredParts(faceParts));
+    const sMat = trackMat(new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.38, metalness: 0.12 }));
+    const signMesh = new THREE.Mesh(mergedSignGeo, sMat);
+    signMesh.name = `sign:${id}`;
+    signMesh.position.set(cx, baseY + clearance + 1.05, cz);
+    signMesh.rotation.y = yaw;
+    signMesh.updateMatrix();
+    signMesh.matrixAutoUpdate = false;
+    group.add(signMesh);
 
     // Colliders ONLY on the two side support legs (roadway remains 100% clear!).
     const cos = Math.cos(yaw);
@@ -514,16 +1851,12 @@ export function buildWorldProps(
     }
   };
 
-  // Plaza -> Highway gantry (visible straight ahead from spawn!).
   addSignGantry('gantry-plaza-highway', 0, 56, 0, 17.5, textures.signs.highwayGantry, true);
-  // Plaza -> Proving Grounds gantry (visible to the front-left / east from spawn!).
   addSignGantry('gantry-plaza-proving', 58, 20, Math.PI / 2, 18.0, textures.signs.provingEntry, true);
-  // Plaza -> Canyon Pass gantry (west exit of plaza).
   addSignGantry('gantry-plaza-canyon', -58, 8, -Math.PI / 2, 15.0, textures.signs.canyonEntry, true);
-  // Highway South Straightaway overhead gantry.
   addSignGantry('gantry-highway-straight', -20, 260, Math.PI / 2, 21.5, textures.signs.highwayGantry, true);
 
-  // Merge all static architectural & proving-ground geometry into ~10 draw calls!
+  // Merge all static architectural, proving-ground, barrier & gantry geometry into ~11 draw calls!
   const batchedGroup = batcher.build('world-structures', { castShadow: true, receiveShadow: true });
   batchedGroup.traverse((obj) => {
     if (obj instanceof THREE.Mesh) geometries.push(obj.geometry);
@@ -531,24 +1864,24 @@ export function buildWorldProps(
   group.add(batchedGroup);
 
   // -------------------------------------------------------------------------
-  // 5. INSTANCED ROADSIDE PROPS (Trees, Boulders, Streetlamps, Guardrails, Cones)
+  // 5. INSTANCED HIGHWAY & CANYON INFRASTRUCTURE (Guardrails, Lamps, Chevrons, Cones)
   // -------------------------------------------------------------------------
   const dummy = new THREE.Object3D();
 
-  // --- Guardrails along Main Highway Outer Edge & Canyon Cliff Dropoffs ---
+  // --- Corrugated W-Beam Guardrails + Steel I-Posts + Reflective Delineator Tabs ---
   const railBeamMats: THREE.Matrix4[] = [];
   const railPostMats: THREE.Matrix4[] = [];
+  const railReflMats: THREE.Matrix4[] = [];
   let guardrailColliderIndex = 0;
 
   for (const road of network.roads) {
     if (road.kind !== 'highway' && road.kind !== 'canyon') continue;
     const samples = road.samples;
-    const step = road.kind === 'highway' ? 3 : 2; // ~7-10m rail spans
+    const step = road.kind === 'highway' ? 3 : 2;
 
     for (let i = 0; i < samples.length - step; i += step) {
       const a = samples[i];
       const b = samples[(i + step) % samples.length];
-      // Leave clean intersections open where connectors meet the highway.
       if (road.kind === 'highway') {
         if (Math.abs(a.z - 260) < 16 && (Math.abs(a.x) < 20 || Math.abs(a.x - 160) < 20)) continue;
         if (Math.abs(a.x + 405) < 30 && Math.abs(a.z - 15) < 25) continue;
@@ -562,36 +1895,50 @@ export function buildWorldProps(
       const my = (a.y + b.y) * 0.5;
       const mz = (a.z + b.z) * 0.5;
       const yaw = Math.atan2(b.x - a.x, b.z - a.z);
+      const slopePitch = -Math.atan2(b.y - a.y, segLen);
       const lx = (b.z - a.z) / segLen;
       const lz = -(b.x - a.x) / segLen;
 
-      // On highway: place guardrail along outer edge (-1 = outside of loop) so valley connectors stay open.
-      // On canyon: place along elevated sections (> 3.5m) on both outer cliff sides.
       const sides = road.kind === 'highway' ? [-1] : a.y > 3.5 ? [-1, 1] : [];
       for (const side of sides) {
         const offset = (road.halfWidth + 0.85) * side;
         const rx = mx + lx * offset;
         const rz = mz + lz * offset;
 
-        // Skip if overlapping another road or flat pad.
         const q = network.query(rx, rz);
         if (q.onRoad) continue;
 
-        // W-beam rail
-        dummy.position.set(rx, my + 0.62, rz);
-        dummy.rotation.set(0, yaw, 0);
-        dummy.scale.set(0.14, 0.34, segLen + 0.15);
+        // Corrugated W-beam rail facing inward toward the lane (strictly positive scale -> valid outward winding!)
+        dummy.position.set(rx, my + 0.64, rz);
+        const beamYaw = side < 0 ? yaw : yaw + Math.PI;
+        const beamPitch = side < 0 ? slopePitch : -slopePitch;
+        dummy.rotation.set(beamPitch, beamYaw, 0, 'YXZ');
+        dummy.scale.set(1, 1, segLen + 0.16);
         dummy.updateMatrix();
         railBeamMats.push(dummy.matrix.clone());
 
-        // Support post at start of segment
-        dummy.position.set(a.x + lx * offset, a.y + 0.38, a.z + lz * offset);
-        dummy.rotation.set(0, yaw, 0);
-        dummy.scale.set(1, 1, 1);
-        dummy.updateMatrix();
-        railPostMats.push(dummy.matrix.clone());
+        // Twin vertical steel I-posts per span (start + midpoint) for authentic highway post spacing (~4m)
+        for (const t of [0.0, 0.5]) {
+          const px = lerp(a.x, b.x, t) + lx * (offset + side * 0.08);
+          const py = lerp(a.y, b.y, t);
+          const pz = lerp(a.z, b.z, t) + lz * (offset + side * 0.08);
+          dummy.position.set(px, py, pz);
+          dummy.rotation.set(0, yaw, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          railPostMats.push(dummy.matrix.clone());
 
-        // Add matching static guardrail collider for every span!
+          // Reflective amber delineator tab mounted atop every primary post
+          if (t === 0.0) {
+            dummy.position.set(px, py + 0.87, pz);
+            dummy.rotation.set(0, yaw, 0);
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            railReflMats.push(dummy.matrix.clone());
+          }
+        }
+
+        // Exact matching static guardrail collider preserved!
         addSolidBox(
           `guardrail-${guardrailColliderIndex++}`,
           'barrier',
@@ -609,119 +1956,332 @@ export function buildWorldProps(
   }
 
   if (railBeamMats.length > 0) {
-    const beamGeo = trackGeo(new THREE.BoxGeometry(1, 1, 1));
-    const beamInst = new THREE.InstancedMesh(beamGeo, steelGalvMat, railBeamMats.length);
+    const beamGeo = trackGeo(buildWBeamGuardrailGeometry());
+    const beamInst = new THREE.InstancedMesh(beamGeo, guardrailBeamMat, railBeamMats.length);
     beamInst.name = 'inst-guardrail-beams';
     beamInst.castShadow = true;
     beamInst.receiveShadow = true;
     railBeamMats.forEach((m, i) => beamInst.setMatrixAt(i, m));
     beamInst.instanceMatrix.needsUpdate = true;
+    beamInst.computeBoundingSphere();
     group.add(beamInst);
 
-    const postGeo = trackGeo(new THREE.BoxGeometry(0.12, 0.85, 0.12));
-    const postInst = new THREE.InstancedMesh(postGeo, steelDarkMat, railPostMats.length);
+    const postGeo = trackGeo(buildGuardrailPostGeometry());
+    const postInst = new THREE.InstancedMesh(postGeo, vertexMetalMat, railPostMats.length);
     postInst.name = 'inst-guardrail-posts';
+    postInst.castShadow = true;
     railPostMats.forEach((m, i) => postInst.setMatrixAt(i, m));
     postInst.instanceMatrix.needsUpdate = true;
+    postInst.computeBoundingSphere();
     group.add(postInst);
+
+    const reflGeo = trackGeo(new THREE.BoxGeometry(0.06, 0.13, 0.09));
+    const reflInst = new THREE.InstancedMesh(reflGeo, reflectorAmberMat, railReflMats.length);
+    reflInst.name = 'inst-guardrail-reflectors';
+    railReflMats.forEach((m, i) => reflInst.setMatrixAt(i, m));
+    reflInst.instanceMatrix.needsUpdate = true;
+    reflInst.computeBoundingSphere();
+    group.add(reflInst);
   }
 
-  // --- Streetlamps lining Plaza, Proving Grounds, and Highway South Straightaway ---
+  // --- Canyon Pass Sharp-Turn Yellow/Black Chevron Signs & Roadside Delineator Posts ---
+  const chevronSignMats: THREE.Matrix4[] = [];
+  const chevronPostMats: THREE.Matrix4[] = [];
+  const delineatorMats: THREE.Matrix4[] = [];
+
+  for (const road of network.roads) {
+    const samples = road.samples;
+    if (road.kind === 'canyon') {
+      let lastChevronIdx = -10;
+      for (let i = 3; i < samples.length - 3; i++) {
+        const prev = samples[i - 2];
+        const curr = samples[i];
+        const next = samples[i + 2];
+        const lx = curr.tz;
+        const lz = -curr.tx;
+
+        // Signed left-turn strength: > 0 means turning left (+L), outside of curve is -L (right).
+        const turnLeft = next.tx * lx + next.tz * lz - (prev.tx * lx + prev.tz * lz);
+        if (Math.abs(turnLeft) > 0.24 && i - lastChevronIdx >= 4) {
+          const outSide = turnLeft > 0 ? -1 : 1;
+          const off = (road.halfWidth + 1.55) * outSide;
+          const sx = curr.x + lx * off;
+          const sz = curr.z + lz * off;
+          const q = network.query(sx, sz);
+          if (!q.onRoad && q.distance >= 0.9) {
+            const sy = terrain.sampleHeight(sx, sz);
+            // Face oncoming traffic (-T), tilted slightly toward roadway
+            const faceYaw = curr.heading + Math.PI + outSide * 0.26;
+            const roll = turnLeft > 0 ? Math.PI : 0; // flip arrow to point left on left turns, right on right turns
+
+            dummy.position.set(sx, sy + 1.78, sz);
+            dummy.rotation.set(0, faceYaw, roll, 'YXZ');
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            chevronSignMats.push(dummy.matrix.clone());
+
+            dummy.position.set(sx, sy, sz);
+            dummy.rotation.set(0, faceYaw, 0);
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            chevronPostMats.push(dummy.matrix.clone());
+            lastChevronIdx = i;
+          }
+        }
+
+        // Roadside flexible delineator posts along lower/shoulder stretches of Canyon Pass
+        if (i % 9 === 0 && curr.y <= 3.8) {
+          for (const side of [-1, 1]) {
+            const off = (road.halfWidth + 1.45) * side;
+            const dx = curr.x + lx * off;
+            const dz = curr.z + lz * off;
+            const q = network.query(dx, dz);
+            if (!q.onRoad && q.distance >= 0.9) {
+              dummy.position.set(dx, terrain.sampleHeight(dx, dz), dz);
+              dummy.rotation.set(0, curr.heading, 0);
+              dummy.scale.set(1, 1, 1);
+              dummy.updateMatrix();
+              delineatorMats.push(dummy.matrix.clone());
+            }
+          }
+        }
+      }
+    } else if (road.kind === 'highway') {
+      // Periodic white/amber delineator posts along inner highway verge (outer side has W-beam guardrails)
+      for (let i = 0; i < samples.length; i += 10) {
+        const curr = samples[i];
+        const lx = curr.tz;
+        const lz = -curr.tx;
+        const off = road.halfWidth + 1.55; // inner (+1) edge
+        const dx = curr.x + lx * off;
+        const dz = curr.z + lz * off;
+        const q = network.query(dx, dz);
+        if (!q.onRoad && q.distance >= 1.0) {
+          dummy.position.set(dx, terrain.sampleHeight(dx, dz), dz);
+          dummy.rotation.set(0, curr.heading, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          delineatorMats.push(dummy.matrix.clone());
+        }
+      }
+    }
+  }
+
+  if (chevronSignMats.length > 0) {
+    const chevBoardGeo = trackGeo(new THREE.PlaneGeometry(0.95, 1.15));
+    chevBoardGeo.translate(0, 0, 0.015);
+    const chevInst = new THREE.InstancedMesh(chevBoardGeo, chevronSignMat, chevronSignMats.length);
+    chevInst.name = 'inst-chevron-signs';
+    chevInst.castShadow = true;
+    chevronSignMats.forEach((m, i) => chevInst.setMatrixAt(i, m));
+    chevInst.instanceMatrix.needsUpdate = true;
+    chevInst.computeBoundingSphere();
+
+    // Galvanized U-channel post + aluminum sign backing plate merged together
+    const postStem = new THREE.BoxGeometry(0.08, 2.35, 0.08);
+    postStem.translate(0, 0.92, -0.055);
+    const signBack = new THREE.BoxGeometry(0.97, 1.17, 0.025);
+    signBack.translate(0, 1.78, -0.005);
+    const chevPostGeo = trackGeo(mergeColoredParts([postStem, signBack]));
+    const chevPostInst = new THREE.InstancedMesh(chevPostGeo, steelGalvMat, chevronPostMats.length);
+    chevPostInst.name = 'inst-chevron-posts';
+    chevronPostMats.forEach((m, i) => chevPostInst.setMatrixAt(i, m));
+    chevPostInst.instanceMatrix.needsUpdate = true;
+    chevPostInst.computeBoundingSphere();
+
+    group.add(chevInst, chevPostInst);
+  }
+
+  if (delineatorMats.length > 0) {
+    const delinGeo = trackGeo(buildDelineatorPostGeometry());
+    const delinInst = new THREE.InstancedMesh(delinGeo, vertexPolymerMat, delineatorMats.length);
+    delinInst.name = 'inst-delineator-posts';
+    delineatorMats.forEach((m, i) => delinInst.setMatrixAt(i, m));
+    delinInst.instanceMatrix.needsUpdate = true;
+    delinInst.computeBoundingSphere();
+    group.add(delinInst);
+  }
+
+  // --- Tapered Galvanized Cobra-Head Streetlamps (2 draw calls total!) ---
   const lampTransforms: { x: number; y: number; z: number; yaw: number }[] = [];
-  // Highway South Straightaway both sides.
   for (let x = -280; x <= 280; x += 38) {
     if (Math.abs(x) < 16 || Math.abs(x - 160) < 16) continue;
-    lampTransforms.push({ x, y: 0, z: 249.5, yaw: 0 });
-    lampTransforms.push({ x, y: 0, z: 270.5, yaw: Math.PI });
+    lampTransforms.push({ x, y: terrain.sampleHeight(x, 249.5), z: 249.5, yaw: 0 });
+    lampTransforms.push({ x, y: terrain.sampleHeight(x, 270.5), z: 270.5, yaw: Math.PI });
   }
-  // Plaza & Connector lamps.
   for (let z = 68; z <= 232; z += 34) {
-    lampTransforms.push({ x: -9.5, y: 0, z, yaw: Math.PI / 2 });
-    lampTransforms.push({ x: 9.5, y: 0, z, yaw: -Math.PI / 2 });
+    lampTransforms.push({ x: -9.5, y: terrain.sampleHeight(-9.5, z), z, yaw: Math.PI / 2 });
+    lampTransforms.push({ x: 9.5, y: terrain.sampleHeight(9.5, z), z, yaw: -Math.PI / 2 });
   }
-  // Proving Grounds perimeter floodlamps.
   for (const x of [95, 145, 195]) {
     lampTransforms.push({ x, y: 0, z: -72, yaw: 0 });
     lampTransforms.push({ x, y: 0, z: 118, yaw: Math.PI });
   }
 
   if (lampTransforms.length > 0) {
-    const poleGeo = trackGeo(new THREE.CylinderGeometry(0.09, 0.14, 7.6, 8));
-    poleGeo.translate(0, 3.8, 0);
-    const armGeo = trackGeo(new THREE.BoxGeometry(0.12, 0.12, 1.9));
-    armGeo.translate(0, 7.55, 0.9);
-    const headGeo = trackGeo(new THREE.BoxGeometry(0.38, 0.12, 0.72));
-    headGeo.translate(0, 7.46, 1.75);
+    const lampGeos = buildCobraStreetlampGeometries();
+    trackGeo(lampGeos.structure);
+    trackGeo(lampGeos.lens);
 
-    const poleInst = new THREE.InstancedMesh(poleGeo, steelDarkMat, lampTransforms.length);
-    const armInst = new THREE.InstancedMesh(armGeo, steelDarkMat, lampTransforms.length);
-    const headInst = new THREE.InstancedMesh(headGeo, lampGlowMat, lampTransforms.length);
-    poleInst.name = 'inst-lamp-poles';
-    armInst.name = 'inst-lamp-arms';
-    headInst.name = 'inst-lamp-heads';
+    const lampInst = new THREE.InstancedMesh(lampGeos.structure, vertexMetalMat, lampTransforms.length);
+    const lensInst = new THREE.InstancedMesh(lampGeos.lens, lampGlowMat, lampTransforms.length);
+    lampInst.name = 'inst-lamp-structures';
+    lensInst.name = 'inst-lamp-lenses';
+    lampInst.castShadow = true;
 
     lampTransforms.forEach((l, i) => {
       dummy.position.set(l.x, l.y, l.z);
       dummy.rotation.set(0, l.yaw, 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
-      poleInst.setMatrixAt(i, dummy.matrix);
-      armInst.setMatrixAt(i, dummy.matrix);
-      headInst.setMatrixAt(i, dummy.matrix);
+      lampInst.setMatrixAt(i, dummy.matrix);
+      lensInst.setMatrixAt(i, dummy.matrix);
     });
-    poleInst.instanceMatrix.needsUpdate = true;
-    armInst.instanceMatrix.needsUpdate = true;
-    headInst.instanceMatrix.needsUpdate = true;
-    group.add(poleInst, armInst, headInst);
+    lampInst.instanceMatrix.needsUpdate = true;
+    lensInst.instanceMatrix.needsUpdate = true;
+    lampInst.computeBoundingSphere();
+    lensInst.computeBoundingSphere();
+    group.add(lampInst, lensInst);
   }
 
-  // --- Instanced Traffic Cones framing Proving Grounds lanes & Slalom Gates ---
+  // --- Rubber-Base Reflective Traffic Cones (1 draw call!) ---
   const conePositions: [number, number][] = [];
-  // Flanking slalom chicane edges.
-  for (let x = 96; x <= 212; x += 12) {
-    conePositions.push([x, 76.4], [x, 99.6]);
-  }
-  // Flanking impact wall runway entry.
-  for (let x = 96; x <= 186; x += 18) {
-    conePositions.push([x, 12.6], [x, 27.4]);
-  }
-  // Flanking launch ramp entry.
-  for (let x = 88; x <= 102; x += 7) {
-    conePositions.push([x, -30.4], [x, -17.6]);
-  }
+  for (let x = 96; x <= 212; x += 12) conePositions.push([x, 76.4], [x, 99.6]);
+  for (let x = 96; x <= 186; x += 18) conePositions.push([x, 12.6], [x, 27.4]);
+  for (let x = 88; x <= 102; x += 7) conePositions.push([x, -30.4], [x, -17.6]);
+
   if (conePositions.length > 0) {
-    const coneGeo = trackGeo(new THREE.ConeGeometry(0.24, 0.76, 10));
-    coneGeo.translate(0, 0.38, 0);
-    const coneInst = new THREE.InstancedMesh(coneGeo, coneOrangeMat, conePositions.length);
+    const coneGeo = trackGeo(buildTrafficConeGeometry());
+    const coneInst = new THREE.InstancedMesh(coneGeo, vertexPolymerMat, conePositions.length);
     coneInst.name = 'inst-traffic-cones';
+    coneInst.castShadow = true;
     conePositions.forEach(([x, z], i) => {
       dummy.position.set(x, 0, z);
-      dummy.rotation.set(0, 0, 0);
+      dummy.rotation.set(0, (i * 0.7) % (Math.PI * 2), 0);
       dummy.scale.set(1, 1, 1);
       dummy.updateMatrix();
       coneInst.setMatrixAt(i, dummy.matrix);
     });
     coneInst.instanceMatrix.needsUpdate = true;
+    coneInst.computeBoundingSphere();
     group.add(coneInst);
   }
 
-  // --- Instanced Trees (Pines & Deciduous) + Canyon Boulders ---
+  // -------------------------------------------------------------------------
+  // 6. REALISTIC INSTANCED BOTANICAL TREES, WILD GRASS, SAGEBRUSH & CANYON BOULDERS
+  // -------------------------------------------------------------------------
   const rand = seededRandom(4242);
-  const pineList: { x: number; y: number; z: number; s: number; yaw: number }[] = [];
-  const oakList: { x: number; y: number; z: number; s: number; yaw: number }[] = [];
-  const boulderList: { x: number; y: number; z: number; sx: number; sy: number; sz: number; rx: number; ry: number }[] = [];
+
+  interface TreeTransform {
+    x: number;
+    y: number;
+    z: number;
+    sx: number;
+    sy: number;
+    yaw: number;
+    leanX: number;
+    leanZ: number;
+    color: THREE.Color;
+  }
+
+  interface GroundTuft {
+    x: number;
+    y: number;
+    z: number;
+    sx: number;
+    sy: number;
+    yaw: number;
+    color: THREE.Color;
+  }
+
+  interface BoulderTransform {
+    x: number;
+    y: number;
+    z: number;
+    sx: number;
+    sy: number;
+    sz: number;
+    rx: number;
+    ry: number;
+    rz: number;
+    color: THREE.Color;
+  }
+
+  const pineList: TreeTransform[] = [];
+  const oakList: TreeTransform[] = [];
+  const grassList: GroundTuft[] = [];
+  const shrubList: GroundTuft[] = [];
+  const boulderA: BoulderTransform[] = [];
+  const boulderB: BoulderTransform[] = [];
 
   const isClearOfBuildings = (x: number, z: number): boolean => {
-    if (x > -60 && x < 60 && z > -58 && z < 56) return false; // Plaza
-    if (x > 68 && x < 248 && z > -82 && z < 128) return false; // Proving grounds
-    if (x > -150 && x < -100 && z > 202 && z < 245) return false; // Service station
-    if (x > 272 && x < 318 && z > 148 && z < 182) return false; // East warehouse
-    if (x > -212 && x < -168 && z > 138 && z < 172) return false; // West warehouse
+    if (x > -62 && x < 62 && z > -60 && z < 58) return false; // Garage Plaza
+    if (x > 66 && x < 252 && z > -86 && z < 130) return false; // Proving Grounds
+    if (x > -154 && x < -96 && z > 198 && z < 246) return false; // Service Station
+    if (x > 270 && x < 320 && z > 146 && z < 184) return false; // East Warehouse
+    if (x > -214 && x < -166 && z > 136 && z < 174) return false; // West Warehouse
     return true;
   };
 
-  // Scatter ~290 pines (preferring canyon slopes, valley edges, and mountain foothills).
-  for (let attempt = 0; attempt < 1100 && pineList.length < 290; attempt++) {
+  // Curated hero pines & California live oaks framing the Garage Plaza backdrop & roadside horizons
+  const heroPines: readonly [number, number, number][] = [
+    [-68, -42, 1.25], [-74, -26, 1.08], [-66, -54, 1.18],
+    [62, -52, 1.22], [54, -68, 1.30], [32, -72, 1.15],
+    [-26, -72, 1.28], [-44, -66, 1.10], [10, -76, 1.20],
+    [-82, 48, 1.16], [56, 78, 1.12], [-48, 86, 1.05],
+  ];
+  const heroOaks: readonly [number, number, number][] = [
+    [-70, 30, 1.18], [-64, 52, 1.05], [48, 66, 1.14],
+    [-38, 68, 1.08], [-88, -14, 1.22], [28, 92, 1.12],
+    [-58, -72, 1.18], [40, -82, 1.06],
+  ];
+
+  const pinePalette = [0xcad4b8, 0xb6c6a2, 0xd4dab8, 0xa8b896, 0xc4cca8];
+  const oakPalette = [0xd2d8b4, 0xbbc69e, 0xdbe0ba, 0xaeb992, 0xc8cfa8];
+  const grassPalette = [0xe4d6a8, 0xd4c896, 0xc6be88, 0xeadcae, 0xbab882];
+  const shrubPalette = [0x9aa688, 0x8a987b, 0xa9b092, 0x7e8d72, 0xb4b698];
+  const rockPalette = [0xd6cdc0, 0xc4baa9, 0xdfd5c5, 0xb8afa2, 0xcec1ae];
+
+  const makeTreeColor = (palette: readonly number[]) =>
+    new THREE.Color(palette[Math.floor(rand() * palette.length)]).offsetHSL(
+      (rand() - 0.5) * 0.025,
+      (rand() - 0.5) * 0.06,
+      (rand() - 0.5) * 0.06,
+    );
+
+  for (const [hx, hz, hs] of heroPines) {
+    if (!isClearOfBuildings(hx, hz)) continue;
+    if (network.query(hx, hz).distance < 9.5) continue;
+    pineList.push({
+      x: hx,
+      y: terrain.sampleHeight(hx, hz) - 0.15,
+      z: hz,
+      sx: hs * (0.94 + rand() * 0.14),
+      sy: hs * (0.96 + rand() * 0.18),
+      yaw: rand() * Math.PI * 2,
+      leanX: (rand() - 0.5) * 0.06,
+      leanZ: (rand() - 0.5) * 0.06,
+      color: makeTreeColor(pinePalette),
+    });
+  }
+  for (const [hx, hz, hs] of heroOaks) {
+    if (!isClearOfBuildings(hx, hz)) continue;
+    if (network.query(hx, hz).distance < 10.5) continue;
+    oakList.push({
+      x: hx,
+      y: terrain.sampleHeight(hx, hz) - 0.15,
+      z: hz,
+      sx: hs * (0.95 + rand() * 0.18),
+      sy: hs * (0.90 + rand() * 0.16),
+      yaw: rand() * Math.PI * 2,
+      leanX: (rand() - 0.5) * 0.05,
+      leanZ: (rand() - 0.5) * 0.05,
+      color: makeTreeColor(oakPalette),
+    });
+  }
+
+  // Scatter ~315 coastal pines across canyon slopes, valley perimeter & mountain foothills
+  for (let attempt = 0; attempt < 1250 && pineList.length < 315; attempt++) {
     const x = (rand() * 2 - 1) * 510;
     const z = (rand() * 2 - 1) * 510;
     if (!isClearOfBuildings(x, z)) continue;
@@ -729,116 +2289,327 @@ export function buildWorldProps(
     if (q.distance < 10.5) continue;
     const y = terrain.sampleHeight(x, z);
     if (y > 46) continue;
-    pineList.push({ x, y: y - 0.15, z, s: 0.8 + rand() * 0.85, yaw: rand() * Math.PI * 2 });
+    const baseS = 0.82 + rand() * 0.82;
+    pineList.push({
+      x,
+      y: y - 0.15,
+      z,
+      sx: baseS * (0.88 + rand() * 0.24),
+      sy: baseS * (0.92 + rand() * 0.30),
+      yaw: rand() * Math.PI * 2,
+      leanX: (rand() - 0.5) * 0.08,
+      leanZ: (rand() - 0.5) * 0.08,
+      color: makeTreeColor(pinePalette),
+    });
   }
 
-  // Scatter ~120 valley deciduous trees (lower elevations near meadows & plaza perimeter).
-  for (let attempt = 0; attempt < 600 && oakList.length < 120; attempt++) {
-    const x = (rand() * 2 - 1) * 440;
-    const z = (rand() * 2 - 1) * 440;
+  // Scatter ~155 California Live Oaks across valley meadows, plaza outskirts & lower foothills
+  for (let attempt = 0; attempt < 780 && oakList.length < 155; attempt++) {
+    const x = (rand() * 2 - 1) * 455;
+    const z = (rand() * 2 - 1) * 455;
     if (!isClearOfBuildings(x, z)) continue;
     const q = network.query(x, z);
     if (q.distance < 11.5) continue;
     const y = terrain.sampleHeight(x, z);
-    if (y > 14) continue;
-    oakList.push({ x, y: y - 0.15, z, s: 0.85 + rand() * 0.75, yaw: rand() * Math.PI * 2 });
+    if (y > 16) continue;
+    const baseS = 0.86 + rand() * 0.72;
+    oakList.push({
+      x,
+      y: y - 0.15,
+      z,
+      sx: baseS * (0.92 + rand() * 0.24),
+      sy: baseS * (0.86 + rand() * 0.20),
+      yaw: rand() * Math.PI * 2,
+      leanX: (rand() - 0.5) * 0.07,
+      leanZ: (rand() - 0.5) * 0.07,
+      color: makeTreeColor(oakPalette),
+    });
   }
 
-  // Scatter ~125 canyon boulders & roadside rock outcrops.
-  for (let attempt = 0; attempt < 650 && boulderList.length < 125; attempt++) {
-    const x = (rand() * 2 - 1) * 500;
-    const z = (rand() * 2 - 1) * 500;
+  // Scatter ~165 sculpted stratified sandstone/granite boulders (clustered naturally on canyon hills & slopes)
+  for (let attempt = 0; attempt < 760 && boulderA.length + boulderB.length < 165; attempt++) {
+    const x = (rand() * 2 - 1) * 495;
+    const z = (rand() * 2 - 1) * 495;
     if (!isClearOfBuildings(x, z)) continue;
     const q = network.query(x, z);
-    if (q.distance < 8.5) continue;
+    if (q.distance < 7.2) continue;
     const y = terrain.sampleHeight(x, z);
-    if (y < 2.2 && rand() < 0.72) continue; // Bias boulders onto hills & canyon cuts
-    const base = 1.1 + rand() * 2.8;
-    boulderList.push({
+    if (y < 1.8 && rand() < 0.72) continue;
+
+    const base = 1.05 + rand() * 2.75;
+    const sx = base * (0.82 + rand() * 0.62);
+    const sy = base * (0.52 + rand() * 0.52);
+    const sz = base * (0.82 + rand() * 0.62);
+    const target = (boulderA.length + boulderB.length) % 2 === 0 ? boulderA : boulderB;
+    const rCol = makeTreeColor(rockPalette);
+    target.push({
       x,
-      y: y - base * 0.25,
+      y: y - sy * 0.32,
       z,
-      sx: base * (0.8 + rand() * 0.6),
-      sy: base * (0.55 + rand() * 0.55),
-      sz: base * (0.8 + rand() * 0.6),
-      rx: rand() * Math.PI,
+      sx,
+      sy,
+      sz,
+      rx: (rand() - 0.5) * 0.45,
       ry: rand() * Math.PI * 2,
+      rz: (rand() - 0.5) * 0.45,
+      color: rCol,
+    });
+
+    // Occasional smaller satellite rock tucked right beside hero outcrop
+    if (base > 2.0 && rand() < 0.45 && boulderA.length + boulderB.length < 165) {
+      const ang = rand() * Math.PI * 2;
+      const ox = x + Math.cos(ang) * (sx * 0.9 + 0.8);
+      const oz = z + Math.sin(ang) * (sz * 0.9 + 0.8);
+      if (isClearOfBuildings(ox, oz) && network.query(ox, oz).distance >= 5.5) {
+        const sub = base * (0.38 + rand() * 0.25);
+        const subSy = sub * (0.55 + rand() * 0.4);
+        const other = target === boulderA ? boulderB : boulderA;
+        other.push({
+          x: ox,
+          y: terrain.sampleHeight(ox, oz) - subSy * 0.34,
+          z: oz,
+          sx: sub * (0.85 + rand() * 0.4),
+          sy: subSy,
+          sz: sub * (0.85 + rand() * 0.4),
+          rx: (rand() - 0.5) * 0.5,
+          ry: rand() * Math.PI * 2,
+          rz: (rand() - 0.5) * 0.5,
+          color: rCol.clone().multiplyScalar(0.94),
+        });
+      }
+    }
+  }
+
+  // Scatter ~340 California sagebrush / chaparral shrubs along canyon embankments, boulders & meadows
+  for (let attempt = 0; attempt < 1100 && shrubList.length < 340; attempt++) {
+    const x = (rand() * 2 - 1) * 480;
+    const z = (rand() * 2 - 1) * 480;
+    if (!isClearOfBuildings(x, z)) continue;
+    const q = network.query(x, z);
+    if (q.distance < 3.6) continue;
+    const y = terrain.sampleHeight(x, z);
+    if (y > 32) continue;
+    const s = 0.72 + rand() * 0.85;
+    shrubList.push({
+      x,
+      y: y - 0.10,
+      z,
+      sx: s * (0.85 + rand() * 0.35),
+      sy: s * (0.72 + rand() * 0.38),
+      yaw: rand() * Math.PI * 2,
+      color: makeTreeColor(shrubPalette),
     });
   }
 
+  // Scatter ~780 coastal wild grass & oat tufts:
+  // (1) Roadside verge ribbons along highway, canyon & connectors (outside gravel shoulder: distance >= 2.6m)
+  for (const road of network.roads) {
+    const step = road.kind === 'canyon' ? 2 : 3;
+    for (let i = 0; i < road.samples.length && grassList.length < 440; i += step) {
+      const s = road.samples[i];
+      const lx = s.tz;
+      const lz = -s.tx;
+      for (const side of [-1, 1]) {
+        if (rand() < 0.34) continue;
+        const distOut = s.halfWidth + 3.2 + rand() * 8.2;
+        const gx = s.x + lx * side * distOut + (rand() - 0.5) * 2.2;
+        const gz = s.z + lz * side * distOut + (rand() - 0.5) * 2.2;
+        if (!isClearOfBuildings(gx, gz)) continue;
+        const q = network.query(gx, gz);
+        if (q.onRoad || q.distance < 3.0) continue;
+        const gy = terrain.sampleHeight(gx, gz);
+        if (gy > 26) continue;
+        const sc = 0.80 + rand() * 0.78;
+        grassList.push({
+          x: gx,
+          y: gy - 0.06,
+          z: gz,
+          sx: sc * (0.90 + rand() * 0.35),
+          sy: sc * (0.78 + rand() * 0.45),
+          yaw: rand() * Math.PI * 2,
+          color: makeTreeColor(grassPalette),
+        });
+      }
+    }
+  }
+
+  // (2) Ground-anchoring grass tufts clustered organically around oak & pine trunks + valley meadows
+  for (let i = 0; i < oakList.length && grassList.length < 620; i++) {
+    const t = oakList[i];
+    if (rand() < 0.3) continue;
+    const ang = rand() * Math.PI * 2;
+    const r = 0.9 + rand() * 2.1;
+    const gx = t.x + Math.cos(ang) * r;
+    const gz = t.z + Math.sin(ang) * r;
+    if (!isClearOfBuildings(gx, gz) || network.query(gx, gz).distance < 3.1) continue;
+    const sc = 0.85 + rand() * 0.70;
+    grassList.push({
+      x: gx,
+      y: terrain.sampleHeight(gx, gz) - 0.06,
+      z: gz,
+      sx: sc,
+      sy: sc * (0.85 + rand() * 0.35),
+      yaw: rand() * Math.PI * 2,
+      color: makeTreeColor(grassPalette),
+    });
+  }
+  for (let attempt = 0; attempt < 500 && grassList.length < 780; attempt++) {
+    const x = (rand() * 2 - 1) * 440;
+    const z = (rand() * 2 - 1) * 440;
+    if (!isClearOfBuildings(x, z)) continue;
+    const q = network.query(x, z);
+    if (q.distance < 3.1) continue;
+    const y = terrain.sampleHeight(x, z);
+    if (y > 22) continue;
+    const sc = 0.85 + rand() * 0.85;
+    grassList.push({
+      x,
+      y: y - 0.06,
+      z,
+      sx: sc * (0.9 + rand() * 0.35),
+      sy: sc * (0.8 + rand() * 0.45),
+      yaw: rand() * Math.PI * 2,
+      color: makeTreeColor(grassPalette),
+    });
+  }
+
+  // --- Instantiate Coastal Pines (2 draw calls total!) ---
   if (pineList.length > 0) {
-    const trunkGeo = trackGeo(new THREE.CylinderGeometry(0.22, 0.38, 3.2, 7));
-    trunkGeo.translate(0, 1.6, 0);
-    const tier1Geo = trackGeo(new THREE.ConeGeometry(2.35, 5.2, 8));
-    tier1Geo.translate(0, 4.8, 0);
-    const tier2Geo = trackGeo(new THREE.ConeGeometry(1.75, 4.4, 8));
-    tier2Geo.translate(0, 7.6, 0);
+    const pineGeos = buildCoastalPineGeometries();
+    trackGeo(pineGeos.trunk);
+    trackGeo(pineGeos.canopy);
 
-    const trunkInst = new THREE.InstancedMesh(trunkGeo, barkMat, pineList.length);
-    const t1Inst = new THREE.InstancedMesh(tier1Geo, pineMat, pineList.length);
-    const t2Inst = new THREE.InstancedMesh(tier2Geo, pineMat, pineList.length);
+    const trunkInst = new THREE.InstancedMesh(pineGeos.trunk, barkMat, pineList.length);
+    const canopyInst = new THREE.InstancedMesh(pineGeos.canopy, pineCanopyMat, pineList.length);
     trunkInst.name = 'inst-pine-trunks';
-    t1Inst.name = 'inst-pine-lower';
-    t2Inst.name = 'inst-pine-upper';
-    t1Inst.castShadow = true;
-    t2Inst.castShadow = true;
+    canopyInst.name = 'inst-pine-canopy';
+    trunkInst.castShadow = true;
+    trunkInst.receiveShadow = true;
+    canopyInst.castShadow = true;
+    canopyInst.receiveShadow = true;
 
+    const white = new THREE.Color(0xffffff);
     pineList.forEach((p, i) => {
       dummy.position.set(p.x, p.y, p.z);
-      dummy.rotation.set(0, p.yaw, 0);
-      dummy.scale.set(p.s, p.s, p.s);
+      dummy.rotation.set(p.leanX, p.yaw, p.leanZ, 'YXZ');
+      dummy.scale.set(p.sx, p.sy, p.sx);
       dummy.updateMatrix();
       trunkInst.setMatrixAt(i, dummy.matrix);
-      t1Inst.setMatrixAt(i, dummy.matrix);
-      t2Inst.setMatrixAt(i, dummy.matrix);
+      trunkInst.setColorAt(i, white);
+      canopyInst.setMatrixAt(i, dummy.matrix);
+      canopyInst.setColorAt(i, p.color);
     });
     trunkInst.instanceMatrix.needsUpdate = true;
-    t1Inst.instanceMatrix.needsUpdate = true;
-    t2Inst.instanceMatrix.needsUpdate = true;
-    group.add(trunkInst, t1Inst, t2Inst);
+    if (trunkInst.instanceColor) trunkInst.instanceColor.needsUpdate = true;
+    canopyInst.instanceMatrix.needsUpdate = true;
+    if (canopyInst.instanceColor) canopyInst.instanceColor.needsUpdate = true;
+    trunkInst.computeBoundingSphere();
+    canopyInst.computeBoundingSphere();
+    group.add(trunkInst, canopyInst);
   }
 
+  // --- Instantiate California Live Oaks (2 draw calls total!) ---
   if (oakList.length > 0) {
-    const trunkGeo = trackGeo(new THREE.CylinderGeometry(0.26, 0.42, 3.4, 7));
-    trunkGeo.translate(0, 1.7, 0);
-    const crownGeo = trackGeo(new THREE.DodecahedronGeometry(2.75, 1));
-    crownGeo.translate(0, 5.4, 0);
+    const oakGeos = buildCaliforniaOakGeometries();
+    trackGeo(oakGeos.trunk);
+    trackGeo(oakGeos.canopy);
 
-    const trunkInst = new THREE.InstancedMesh(trunkGeo, barkMat, oakList.length);
-    const crownInst = new THREE.InstancedMesh(crownGeo, oakMat, oakList.length);
+    const trunkInst = new THREE.InstancedMesh(oakGeos.trunk, barkMat, oakList.length);
+    const canopyInst = new THREE.InstancedMesh(oakGeos.canopy, oakCanopyMat, oakList.length);
     trunkInst.name = 'inst-oak-trunks';
-    crownInst.name = 'inst-oak-crowns';
-    crownInst.castShadow = true;
+    canopyInst.name = 'inst-oak-canopy';
+    trunkInst.castShadow = true;
+    trunkInst.receiveShadow = true;
+    canopyInst.castShadow = true;
+    canopyInst.receiveShadow = true;
 
+    const white = new THREE.Color(0xffffff);
     oakList.forEach((o, i) => {
       dummy.position.set(o.x, o.y, o.z);
-      dummy.rotation.set(0, o.yaw, 0);
-      dummy.scale.set(o.s, o.s * 0.92, o.s);
+      dummy.rotation.set(o.leanX, o.yaw, o.leanZ, 'YXZ');
+      dummy.scale.set(o.sx, o.sy, o.sx);
       dummy.updateMatrix();
       trunkInst.setMatrixAt(i, dummy.matrix);
-      crownInst.setMatrixAt(i, dummy.matrix);
+      trunkInst.setColorAt(i, white);
+      canopyInst.setMatrixAt(i, dummy.matrix);
+      canopyInst.setColorAt(i, o.color);
     });
     trunkInst.instanceMatrix.needsUpdate = true;
-    crownInst.instanceMatrix.needsUpdate = true;
-    group.add(trunkInst, crownInst);
+    if (trunkInst.instanceColor) trunkInst.instanceColor.needsUpdate = true;
+    canopyInst.instanceMatrix.needsUpdate = true;
+    if (canopyInst.instanceColor) canopyInst.instanceColor.needsUpdate = true;
+    trunkInst.computeBoundingSphere();
+    canopyInst.computeBoundingSphere();
+    group.add(trunkInst, canopyInst);
   }
 
-  if (boulderList.length > 0) {
-    const rockGeo = trackGeo(new THREE.DodecahedronGeometry(1.0, 0));
-    const rockInst = new THREE.InstancedMesh(rockGeo, boulderMat, boulderList.length);
-    rockInst.name = 'inst-boulders';
+  // --- Instantiate Wild Coastal Grass Tufts & Sagebrush Shrubs (2 draw calls total!) ---
+  if (grassList.length > 0) {
+    const grassGeo = trackGeo(buildGrassTuftGeometry());
+    const grassInst = new THREE.InstancedMesh(grassGeo, grassTuftMat, grassList.length);
+    grassInst.name = 'inst-grass-tufts';
+    grassInst.castShadow = false;
+    grassInst.receiveShadow = true;
+
+    grassList.forEach((g, i) => {
+      dummy.position.set(g.x, g.y, g.z);
+      dummy.rotation.set(0, g.yaw, 0);
+      dummy.scale.set(g.sx, g.sy, g.sx);
+      dummy.updateMatrix();
+      grassInst.setMatrixAt(i, dummy.matrix);
+      grassInst.setColorAt(i, g.color);
+    });
+    grassInst.instanceMatrix.needsUpdate = true;
+    if (grassInst.instanceColor) grassInst.instanceColor.needsUpdate = true;
+    grassInst.computeBoundingSphere();
+    group.add(grassInst);
+  }
+
+  if (shrubList.length > 0) {
+    const shrubGeo = trackGeo(buildChaparralShrubGeometry());
+    const shrubInst = new THREE.InstancedMesh(shrubGeo, oakCanopyMat, shrubList.length);
+    shrubInst.name = 'inst-chaparral-shrubs';
+    shrubInst.castShadow = true;
+    shrubInst.receiveShadow = true;
+
+    shrubList.forEach((s, i) => {
+      dummy.position.set(s.x, s.y, s.z);
+      dummy.rotation.set(0, s.yaw, 0);
+      dummy.scale.set(s.sx, s.sy, s.sx);
+      dummy.updateMatrix();
+      shrubInst.setMatrixAt(i, dummy.matrix);
+      shrubInst.setColorAt(i, s.color);
+    });
+    shrubInst.instanceMatrix.needsUpdate = true;
+    if (shrubInst.instanceColor) shrubInst.instanceColor.needsUpdate = true;
+    shrubInst.computeBoundingSphere();
+    group.add(shrubInst);
+  }
+
+  // --- Instantiate Stratified Canyon Boulders (2 distinct sculpted rock archetypes = 2 draw calls!) ---
+  const addBoulderSet = (list: readonly BoulderTransform[], name: string, seed: number, angularity: number) => {
+    if (list.length === 0) return;
+    const rockGeo = trackGeo(buildSculptedBoulderGeometry(seed, angularity));
+    const rockInst = new THREE.InstancedMesh(rockGeo, boulderMat, list.length);
+    rockInst.name = name;
+    rockInst.castShadow = true;
     rockInst.receiveShadow = true;
 
-    boulderList.forEach((b, i) => {
+    list.forEach((b, i) => {
       dummy.position.set(b.x, b.y, b.z);
-      dummy.rotation.set(b.rx, b.ry, 0);
+      dummy.rotation.set(b.rx, b.ry, b.rz);
       dummy.scale.set(b.sx, b.sy, b.sz);
       dummy.updateMatrix();
       rockInst.setMatrixAt(i, dummy.matrix);
+      rockInst.setColorAt(i, b.color);
     });
     rockInst.instanceMatrix.needsUpdate = true;
+    if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
+    rockInst.computeBoundingSphere();
     group.add(rockInst);
-  }
+  };
+  addBoulderSet(boulderA, 'inst-boulders-crag', 6101, 0.52);
+  addBoulderSet(boulderB, 'inst-boulders-granite', 6209, 0.32);
 
   return { group, geometries, materials, colliders };
 }
