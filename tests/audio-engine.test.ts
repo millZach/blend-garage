@@ -1039,6 +1039,60 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     engine.dispose();
   });
 
+  it('produces loud, responsive resonant tire screech on hard corners, launches, braking, and handbrake drifts with surface scaling', async () => {
+    const mockCtx = new MockAudioContext();
+    const engine = new SoundEngine({
+      audioContextFactory: () => mockCtx as unknown as AudioContext,
+    });
+    await engine.unlock();
+    engine.setMode('drive');
+
+    // Verify both tight high-Q resonant rubber formants (Q >= 14) exist
+    const highQFormants = mockCtx.filters.filter((f) => f.type === 'bandpass' && f.Q.value >= 14);
+    expect(highQFormants.length).toBeGreaterThanOrEqual(2);
+
+    // Locate screechGain (the gain fed by the 4100 Hz lowpass of the tire screech chain)
+    const screechLp = mockCtx.filters.find((f) => f.type === 'lowpass' && f.frequency.value === 4100);
+    expect(screechLp).toBeDefined();
+    const screechGain = screechLp?.connections[0] as MockGainNode | undefined;
+    expect(screechGain).toBeDefined();
+
+    // Silent when stopped or below threshold
+    engine.updateDrive(makeDriveFrame({ speedMps: 0.3, slipRatio: 0.05, handbrake: false }));
+    expect(screechGain!.gain.value).toBe(0);
+
+    // Responsive onset on low-speed launch / moderate corner slip (> 0.12 slip, > 0.9 m/s)
+    engine.updateDrive(makeDriveFrame({ speedMps: 4.5, slipRatio: 0.32, handbrake: false, surface: 'asphalt' }));
+    const cornerLevel = screechGain!.gain.value;
+    expect(cornerLevel).toBeGreaterThan(0.14);
+
+    // Full handbrake drift on asphalt cuts cleanly through engine (>= 0.62)
+    engine.updateDrive(makeDriveFrame({ speedMps: 22, slipRatio: 0.2, handbrake: true, surface: 'asphalt' }));
+    const asphaltDrift = screechGain!.gain.value;
+    expect(asphaltDrift).toBeGreaterThanOrEqual(0.62);
+    expect(asphaltDrift).toBeLessThanOrEqual(0.85);
+
+    // Concrete is slightly louder; gravel & grass attenuate properly; airborne mutes to 0
+    engine.updateDrive(makeDriveFrame({ speedMps: 22, slipRatio: 0.2, handbrake: true, surface: 'concrete' }));
+    const concreteDrift = screechGain!.gain.value;
+    expect(concreteDrift).toBeGreaterThan(asphaltDrift);
+
+    engine.updateDrive(makeDriveFrame({ speedMps: 22, slipRatio: 0.2, handbrake: true, surface: 'gravel' }));
+    const gravelDrift = screechGain!.gain.value;
+    expect(gravelDrift).toBeGreaterThan(0.08);
+    expect(gravelDrift).toBeLessThan(asphaltDrift * 0.35);
+
+    engine.updateDrive(makeDriveFrame({ speedMps: 22, slipRatio: 0.2, handbrake: true, surface: 'grass' }));
+    const grassDrift = screechGain!.gain.value;
+    expect(grassDrift).toBeGreaterThan(0.03);
+    expect(grassDrift).toBeLessThan(gravelDrift);
+
+    engine.updateDrive(makeDriveFrame({ speedMps: 22, slipRatio: 0.9, handbrake: true, airborne: true }));
+    expect(screechGain!.gain.value).toBe(0);
+
+    engine.dispose();
+  });
+
   it('triggers heavy crash impacts (sub-slam, buckling groan, staggered glass shatter), part detach, scrape, repair & reset', async () => {
     const mockCtx = new MockAudioContext();
     const engine = new SoundEngine({

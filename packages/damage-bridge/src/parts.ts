@@ -7,8 +7,9 @@ export interface PartClassification {
   thresholdJoules: number;
 }
 
-const CORE_BODY_PATTERN = /(^|[_\-\s])(body|body_shell|chassis|frame|unibody|monocoque|tub|cabin|interior|floor|firewall|pillar|glass|windshield|windscreen)($|[_\-\s])/;
+const CORE_BODY_PATTERN = /(^|[_\-\s])(body|body_shell|chassis|frame|unibody|monocoque|tub|cabin|interior|floor|firewall|pillar|glass|windshield|windscreen|window|backlight)($|[_\-\s])/;
 const ROOF_RACK_PATTERN = /(roof[_\-\s]?rack|rack|lightbar|cargo|basket)/;
+const TOW_HOOK_PATTERN = /(tow[_\-\s]?hook)/;
 const MIRROR_PATTERN = /(mirror|wingmirror|side[_\-\s]?mirror)/;
 const SPOILER_PATTERN = /(spoiler|wing|diffuser|splitter|lip|canard|aero|blade)/;
 const BUMPER_PATTERN = /(bumper|grille|grill|fascia|valance|chin)/;
@@ -17,6 +18,13 @@ const HOOD_PATTERN = /(hood|bonnet)/;
 const TRUNK_PATTERN = /(trunk|boot|tailgate|hatch|decklid)/;
 const FENDER_PATTERN = /(fender|quarter|arch|skirt|rocker|flare)/;
 const DOOR_PATTERN = /(door)/;
+
+const GLASS_MESH_PATTERN = /(glass|window|windscreen|windshield|backlight|glazing|visor)/i;
+
+/** Returns true if a mesh id/material represents glass or glazing (damped deformation). */
+export function isGlassMeshId(meshPartId: string): boolean {
+  return GLASS_MESH_PATTERN.test(meshPartId);
+}
 
 /**
  * Extracts the logical part name from a `VehicleRig` deformable id.
@@ -29,9 +37,11 @@ export function extractLogicalPartId(meshPartId: string): string {
 
 /**
  * Classifies a mesh/part id into a damage category and structural detachment threshold.
- * Main body meshes (`body/...`, `body_shell`, `chassis`) never detach so the car cannot vanish;
- * external bolt-on panels (mirrors, spoilers, bumpers, hoods, fenders, doors) detach cleanly
- * once accumulated local crash energy exceeds their threshold.
+ *
+ * Core structural panels (`body`, `hood`, `trunk`, `fender`, `quarter`, `door`, `roof`) NEVER detach,
+ * preventing hollow black holes in open-shell Blender car meshes.
+ * Only genuine bolt-on exterior attachments (`spoiler`, `wing`, `splitter`, `diffuser`, `bumper`,
+ * `exhaust`, `mirror`, `tow_hook`, `roof_rack`) detach on heavy localized impacts (>= 40–55 kJ).
  */
 export function classifyDamagePart(
   meshPartId: string,
@@ -50,47 +60,47 @@ export function classifyDamagePart(
     };
   }
 
-  // Roof racks/lightbars are detachable even though they contain "roof".
+  // Genuine bolt-on exterior attachments (heavy localized hit thresholds: 40–55 kJ).
   if (ROOF_RACK_PATTERN.test(lower)) {
-    return { logicalId, category: 'spoiler', detachable: true, thresholdJoules: 16_000 };
+    return { logicalId, category: 'spoiler', detachable: true, thresholdJoules: 42_000 };
+  }
+  if (TOW_HOOK_PATTERN.test(lower)) {
+    return { logicalId, category: 'other', detachable: true, thresholdJoules: 42_000 };
   }
 
-  // Core body shell / chassis never detaches as a whole.
+  // Core body shell / chassis never detaches.
   if (lower === 'body' || lower === 'roof' || CORE_BODY_PATTERN.test(lower)) {
     return { logicalId, category: 'body', detachable: false, thresholdJoules: Number.POSITIVE_INFINITY };
   }
 
   if (MIRROR_PATTERN.test(lower)) {
-    return { logicalId, category: 'mirror', detachable: true, thresholdJoules: 10_000 };
+    return { logicalId, category: 'mirror', detachable: true, thresholdJoules: 40_000 };
   }
   if (SPOILER_PATTERN.test(lower)) {
-    return { logicalId, category: 'spoiler', detachable: true, thresholdJoules: 18_000 };
+    return { logicalId, category: 'spoiler', detachable: true, thresholdJoules: 45_000 };
   }
   if (EXHAUST_PATTERN.test(lower)) {
-    return { logicalId, category: 'exhaust', detachable: true, thresholdJoules: 24_000 };
+    return { logicalId, category: 'exhaust', detachable: true, thresholdJoules: 48_000 };
   }
   if (BUMPER_PATTERN.test(lower)) {
-    return { logicalId, category: 'bumper', detachable: true, thresholdJoules: 26_000 };
+    return { logicalId, category: 'bumper', detachable: true, thresholdJoules: 55_000 };
   }
+
+  // Structural body panels stay permanently attached so crashes dent cleanly without hollow holes.
   if (HOOD_PATTERN.test(lower)) {
-    return { logicalId, category: 'hood', detachable: true, thresholdJoules: 38_000 };
+    return { logicalId, category: 'hood', detachable: false, thresholdJoules: Number.POSITIVE_INFINITY };
   }
   if (TRUNK_PATTERN.test(lower)) {
-    return { logicalId, category: 'trunk', detachable: true, thresholdJoules: 38_000 };
+    return { logicalId, category: 'trunk', detachable: false, thresholdJoules: Number.POSITIVE_INFINITY };
   }
   if (FENDER_PATTERN.test(lower)) {
-    return { logicalId, category: 'fender', detachable: true, thresholdJoules: 46_000 };
+    return { logicalId, category: 'fender', detachable: false, thresholdJoules: Number.POSITIVE_INFINITY };
   }
   if (DOOR_PATTERN.test(lower)) {
-    return { logicalId, category: 'door', detachable: true, thresholdJoules: 54_000 };
+    return { logicalId, category: 'door', detachable: false, thresholdJoules: Number.POSITIVE_INFINITY };
   }
 
-  // Explicit Blender `part_` / `part-` convention defaults to detachable bolt-on part.
-  if (lower.startsWith('part_') || lower.startsWith('part-')) {
-    return { logicalId, category: 'other', detachable: true, thresholdJoules: 30_000 };
-  }
-
-  // Untagged / unknown meshes default to non-detachable bodywork for graceful fallback.
+  // Unknown/generic panels default to attached bodywork so random structural meshes never tear off.
   return { logicalId, category: 'body', detachable: false, thresholdJoules: Number.POSITIVE_INFINITY };
 }
 

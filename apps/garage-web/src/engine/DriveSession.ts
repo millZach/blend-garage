@@ -225,7 +225,20 @@ export class DriveSession {
 
     const sim = await DrivingWorldSim.create(physicsConfig, world.getColliders(), world.getDynamicPropDefs());
 
-    const damageSim = new RealDamageSimulator();
+    const damageSim = new RealDamageSimulator({
+      wheelPositions: [
+        physicsConfig.wheels[0].position,
+        physicsConfig.wheels[1].position,
+        physicsConfig.wheels[2].position,
+        physicsConfig.wheels[3].position,
+      ],
+      wheelRadii: [
+        physicsConfig.wheels[0].radius,
+        physicsConfig.wheels[1].radius,
+        physicsConfig.wheels[2].radius,
+        physicsConfig.wheels[3].radius,
+      ],
+    });
     await damageSim.init({
       carId: rig.manifest.id,
       massKg: physicsConfig.massKg,

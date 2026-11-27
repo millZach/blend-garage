@@ -1,5 +1,5 @@
 import type { Vec3 } from '@blend-garage/vehicle-core';
-import { classifyDamagePart, type PartClassification } from './parts.js';
+import { classifyDamagePart, isGlassMeshId, type PartClassification } from './parts.js';
 import {
   buildVertexTriangleAdjacency,
   MeshSpatialIndex,
@@ -25,10 +25,19 @@ import {
 const ADJACENCY_VERTEX_LIMIT = 350_000;
 /** Above this vertex count, use sparse original-normal backup instead of full Float32Array.slice(). */
 const DENSE_NORMAL_BACKUP_LIMIT = 250_000;
+/** Wheel-well clearance margin beyond tire outer radius so fenders never slice into spinning tires. */
+const WHEEL_WELL_CLEARANCE = 0.08;
+/** Half-width of wheel-well exclusion cylinder along vehicle X axis (meters). */
+const WHEEL_WELL_HALF_WIDTH = 0.26;
+/** Minimum vertex displacement (meters) before paint scuff/primer darkening starts. */
+const SCUFF_MIN_DISPLACEMENT = 0.05;
+/** Displacement range (meters) over which damageIntensity ramps cleanly 0 -> 1 (`0.05..0.24 m`). */
+const SCUFF_RAMP_SPAN = 0.19;
 
 interface MeshEntry {
   payload: DeformableMeshPayload;
   classification: PartClassification;
+  isGlass: boolean;
   spatial: MeshSpatialIndex;
   /** Full original-normal snapshot for <= 250k vertex meshes. */
   restNormalsDense: Float32Array | null;
@@ -81,22 +90,24 @@ const DEFAULT_CELL_SIZE = 0.22;
 const COOLDOWN_DISTANCE_SQ = 0.35 * 0.35;
 
 /**
- * High-performance 60-fps crash damage & accordion crumple-zone vertex deformation simulator.
+ * High-performance 60-fps crash damage & cohesive sheet-metal dent simulator.
  *
- * Designed for high-poly vehicles (250k–10M triangles):
- * - Uses per-mesh O(1) AABB rejection + flat CSR 3D spatial grids so `applyImpact()`
- *   touches only vertices inside the impact zone in milliseconds.
- * - Models visceral BeamNG-style accordion front/rear crumpling (0.25–0.65m at high speed),
- *   volume-conserving upward hood/trunk tent buckling, outward fender flare, elongated side
- *   scraping creases, multi-scale sheet-metal crinkling, strain hardening, and a rigid cabin
- *   safety cell clamp that prevents cabin intrusion and inside-out inversion.
- * - Computes exact O(k) local creased face normals when `indices` are supplied (or sharp
- *   analytical crease-gradient normals otherwise) plus a per-vertex `damageIntensity` (0..1)
- *   scuff/crease mask for paint scratching and exposed primer shading.
- * - Tracks per-part accumulated crash energy to detach bumpers, spoilers, mirrors, hoods,
- *   fenders, and doors with physical launch impulses (`detachedParts` + `detachedImpulses`).
- * - Degrades engine, lamps, per-corner structural wheel/axle damage (`wheelDamage`: camber,
- *   toe, wobble, collapsed suspension), steering pull, and overall chassis integrity.
+ * Designed for Forza Horizon / GTA V–quality clean automotive denting on high-poly cars (250k–10M tris):
+ * - Uses per-mesh O(1) AABB rejection + flat CSR 3D spatial grids so `applyImpact()` touches
+ *   only vertices inside the tight impact zone (`0.32–0.92 m`) in milliseconds.
+ * - Evaluates smooth cubic/cosine falloff + low-frequency coherent 3D car-space waves
+ *   (`3.5–5.0 rad/m`, <= 12% buckle amplitude) so neighboring panels, trim, and fenders bend
+ *   together seamlessly without spiky origami or torn seams (`0.03–0.20 m/hit`, `0.26–0.34 m` max).
+ * - Protects the rigid passenger cabin safety cell, protects all 4 wheel-well cylinders so
+ *   fenders bow cleanly over tires instead of clipping through them, and damps glass meshes.
+ * - Computes exact O(k) local area-weighted normals when `indices` are supplied (or smooth
+ *   analytical normals otherwise) plus a tightly localized `damageIntensity` scuff mask
+ *   (strictly 0 unless vertex displacement > 0.05 m, ramping 0..1 over 0.05..0.24 m).
+ * - Detaches only genuine bolt-on exterior attachments (spoiler, splitter, bumper, exhaust,
+ *   mirror, tow_hook, roof_rack) on heavy localized hits (>= 40–55 kJ); keeps structural panels
+ *   (hood, fender, door, body) attached so open-shell car meshes never develop hollow holes.
+ * - Degrades engine, lamps, per-corner structural `wheelDamage` (camber, toe, wobble,
+ *   normalized `0..1` collapsed strut), steering pull, and overall chassis integrity.
  */
 export class RealDamageSimulator implements DamageSimulator {
   readonly name = 'real-crumple-damage';
@@ -108,6 +119,7 @@ export class RealDamageSimulator implements DamageSimulator {
   private readonly maxVertexDisplacementOverride: number | undefined;
   private readonly cabinBoxOverride: DamageBounds | undefined;
   private readonly wheelPositionsOverride: [Vec3, Vec3, Vec3, Vec3] | undefined;
+  private readonly wheelRadiiOverride: [number, number, number, number] | undefined;
   private readonly thresholdOverrides: Record<string, number> | undefined;
   private readonly updateNormals: boolean;
 
@@ -124,7 +136,8 @@ export class RealDamageSimulator implements DamageSimulator {
     [0.8, 0.34, -1.32],
     [-0.8, 0.34, -1.32],
   ];
-  private maxVertexDisplacement = 0.68;
+  private wheelRadii: [number, number, number, number] = [0.34, 0.34, 0.34, 0.34];
+  private maxVertexDisplacement = 0.31;
 
   private health: MechanicalHealth = createHealthyMechanicalHealth();
   private structuralDamage = 0;
@@ -147,6 +160,7 @@ export class RealDamageSimulator implements DamageSimulator {
     this.maxVertexDisplacementOverride = options.maxVertexDisplacement;
     this.cabinBoxOverride = options.cabinBox;
     this.wheelPositionsOverride = options.wheelPositions;
+    this.wheelRadiiOverride = options.wheelRadii;
     this.thresholdOverrides = options.detachablePartThresholds;
     this.updateNormals = options.updateNormals ?? true;
   }
@@ -169,6 +183,7 @@ export class RealDamageSimulator implements DamageSimulator {
       const entry: MeshEntry = {
         payload,
         classification,
+        isGlass: isGlassMeshId(payload.partId),
         spatial,
         restNormalsDense: null,
         restNormalsSparseBitset: null,
@@ -253,9 +268,9 @@ export class RealDamageSimulator implements DamageSimulator {
     const midX = 0.5 * (vMinX + vMaxX);
     const midZ = 0.5 * (vMinZ + vMaxZ);
 
-    // Allow deep, unmistakable 0.55–0.75m front/rear accordion crush on severe crashes.
+    // Clean, realistic structural crush limit (0.26–0.34 m max total in nose/tail crumple zones).
     this.maxVertexDisplacement =
-      this.maxVertexDisplacementOverride ?? clamp(length * 0.155, 0.52, 0.76);
+      this.maxVertexDisplacementOverride ?? clamp(length * 0.07, 0.26, 0.34);
 
     if (this.cabinBoxOverride) {
       this.cabinBox = {
@@ -263,10 +278,10 @@ export class RealDamageSimulator implements DamageSimulator {
         max: [...this.cabinBoxOverride.max] as Vec3,
       };
     } else {
-      // Rigid passenger safety cell: inner 58% width, behind firewall to rear bulkhead, floor to headliner.
+      // Rigid passenger safety cell: inner 60% width, behind firewall to rear bulkhead, floor to headliner.
       this.cabinBox = {
-        min: [midX - width * 0.29, vMinY + height * 0.2, midZ - length * 0.23],
-        max: [midX + width * 0.29, vMinY + height * 0.85, midZ + length * 0.19],
+        min: [midX - width * 0.3, vMinY + height * 0.2, midZ - length * 0.24],
+        max: [midX + width * 0.3, vMinY + height * 0.85, midZ + length * 0.2],
       };
     }
 
@@ -287,6 +302,17 @@ export class RealDamageSimulator implements DamageSimulator {
         [midX - wheelX, wheelY, midZ + wheelZ],
         [midX + wheelX, wheelY, midZ - wheelZ],
         [midX - wheelX, wheelY, midZ - wheelZ],
+      ];
+    }
+
+    if (this.wheelRadiiOverride) {
+      this.wheelRadii = [...this.wheelRadiiOverride] as [number, number, number, number];
+    } else {
+      this.wheelRadii = [
+        clamp(this.wheelPositions[0][1], 0.28, 0.4),
+        clamp(this.wheelPositions[1][1], 0.28, 0.4),
+        clamp(this.wheelPositions[2][1], 0.28, 0.4),
+        clamp(this.wheelPositions[3][1], 0.28, 0.4),
       ];
     }
 
@@ -364,7 +390,7 @@ export class RealDamageSimulator implements DamageSimulator {
       }
     }
 
-    // Build orthonormal tangent basis (T1, T2) perpendicular to N for sheet-metal buckling/wrinkling.
+    // Build orthonormal tangent basis (T1, T2) perpendicular to N for gentle cohesive sheet-metal waves.
     let refX = 0;
     let refY = 1;
     let refZ = 0;
@@ -384,27 +410,22 @@ export class RealDamageSimulator implements DamageSimulator {
     const t2y = nz * t1x - nx * t1z;
     const t2z = nx * t1y - ny * t1x;
 
-    // Physically scaled impact energy, crush radius, and accordion depth.
+    // Clean, Forza/GTA-calibrated impact radius (0.32–0.92 m) and per-hit depth (0.03–0.20 m).
     const deltaV = impulse / this.massKg;
     const impactSpeed = Math.max(relativeSpeed, deltaV);
     const energyJoules = 0.5 * impulse * Math.max(1.5, impactSpeed);
-    const radius = clamp(0.4 + 0.22 * Math.log1p(energyJoules / 4500), 0.36, 1.6);
+    const radius = clamp(0.32 + 0.135 * Math.log1p(energyJoules / 5000), 0.32, 0.92);
     const radiusSq = radius * radius;
     const invRadius = 1 / radius;
-    const maxDepth = clamp(0.045 + 0.145 * Math.pow(energyJoules / 12_000, 0.44), 0.04, 0.62);
+    const maxDepth = clamp(0.03 + 0.072 * Math.pow(energyJoules / 14_000, 0.36), 0.03, 0.2);
 
-    // Directional impact decomposition for volume-conserving accordion deformation:
-    // - frontCrush > 0 when nose (+Z) is pushed backward (-Z) -> hood tents upward + fenders flare out
-    // - rearCrush  > 0 when tail (-Z) is pushed forward (+Z) -> trunk tents upward + rear quarters flare
-    // - sideScrape > 0 when hitting/scraping flanks (±X) -> elongated longitudinal scrape crease along Z
+    // Directional decomposition for smooth, volume-conserving sheet-metal denting:
     const frontCrush = nz < -0.35 ? clamp((-nz - 0.35) / 0.65, 0, 1) : 0;
     const rearCrush = nz > 0.35 ? clamp((nz - 0.35) / 0.65, 0, 1) : 0;
-    const longitudinalCrush = frontCrush > rearCrush ? frontCrush : rearCrush;
     const absNx = Math.abs(nx);
     const sideScrape = absNx > 0.45 ? clamp((absNx - 0.45) / 0.55, 0, 1) : 0;
-    const scrapeElongZ = 1 + sideScrape * 0.65 * clamp(impactSpeed / 22, 0.25, 1.0);
+    const scrapeElongZ = 1 + sideScrape * 0.38 * clamp(impactSpeed / 22, 0.25, 1.0);
     const invScrapeElongZ = 1 / scrapeElongZ;
-    const speedScuffFactor = clamp(impactSpeed / 16, 0.32, 1.0);
 
     const cMinX = this.cabinBox.min[0];
     const cMinY = this.cabinBox.min[1];
@@ -413,18 +434,44 @@ export class RealDamageSimulator implements DamageSimulator {
     const cMaxY = this.cabinBox.max[1];
     const cMaxZ = this.cabinBox.max[2];
     const minFloorY = vMinY + 0.02;
-    const hoodFloorY = midY - height * 0.1;
+    const hoodFloorY = midY - height * 0.08;
     const frontZoneSpan = Math.max(0.25, vMaxZ - cMaxZ);
     const rearZoneSpan = Math.max(0.25, cMinZ - vMinZ);
     const invFrontZoneSpan = 1 / frontZoneSpan;
     const invRearZoneSpan = 1 / rearZoneSpan;
-    const fenderFlareX = width * 0.24;
+    const fenderFlareX = width * 0.26;
+
+    // Hoist all 4 wheel-well exclusion cylinders for zero-allocation tire-clearance checks.
+    const w0x = this.wheelPositions[0][0];
+    const w0y = this.wheelPositions[0][1];
+    const w0z = this.wheelPositions[0][2];
+    const w0r = this.wheelRadii[0] + WHEEL_WELL_CLEARANCE;
+    const w0rSq = w0r * w0r;
+
+    const w1x = this.wheelPositions[1][0];
+    const w1y = this.wheelPositions[1][1];
+    const w1z = this.wheelPositions[1][2];
+    const w1r = this.wheelRadii[1] + WHEEL_WELL_CLEARANCE;
+    const w1rSq = w1r * w1r;
+
+    const w2x = this.wheelPositions[2][0];
+    const w2y = this.wheelPositions[2][1];
+    const w2z = this.wheelPositions[2][2];
+    const w2r = this.wheelRadii[2] + WHEEL_WELL_CLEARANCE;
+    const w2rSq = w2r * w2r;
+
+    const w3x = this.wheelPositions[3][0];
+    const w3y = this.wheelPositions[3][1];
+    const w3z = this.wheelPositions[3][2];
+    const w3r = this.wheelRadii[3] + WHEEL_WELL_CLEARANCE;
+    const w3rSq = w3r * w3r;
 
     const maxCap = this.maxVertexDisplacement;
     const maxCapSq = maxCap * maxCap;
     const invHalfLength = 1 / halfLength;
     const invMaxCap = 1 / maxCap;
     const capStop = maxCap - 1e-4;
+    const invScuffSpan = 1 / SCUFF_RAMP_SPAN;
 
     const dirtyPartIds: string[] = [];
     const meshUpdates: MeshDamageUpdate[] = [];
@@ -462,6 +509,8 @@ export class RealDamageSimulator implements DamageSimulator {
       const normals = this.updateNormals ? entry.payload.normals : undefined;
       const hasNormals = normals !== undefined && normals.length >= pos.length;
       const indices = entry.payload.indices;
+      const isGlass = entry.isGlass;
+      const glassScale = isGlass ? 0.25 : 1.0;
       const useExactTriNormals =
         hasNormals &&
         indices !== undefined &&
@@ -553,7 +602,7 @@ export class RealDamageSimulator implements DamageSimulator {
               const dx = px - ix;
               const dy = py - iy;
               const dz = pz - iz;
-              // Ellipsoidal distance elongates glancing side scrapes along Z without affecting head-on spheres.
+              // Mildly elongates glancing side scrapes along Z while keeping front/rear impacts compact.
               const dzScaled = dz * invScrapeElongZ;
               const distSq = dx * dx + dy * dy + dzScaled * dzScaled;
               if (distSq >= radiusSq) continue;
@@ -576,116 +625,152 @@ export class RealDamageSimulator implements DamageSimulator {
 
               const dist = Math.sqrt(distSq);
               const t = 1 - dist * invRadius; // 1 at impact center, 0 at edge
-              const falloff = t * t * (3 - 2 * t); // C1 smoothstep
+              // Smooth C1 cubic/quintic blend: smoothstep * sqrt(smoothstep) gives cohesive dents with soft edges.
+              const s = t * t * (3 - 2 * t);
+              const falloff = s * (0.35 + 0.65 * s);
               if (falloff <= 1e-5) continue;
 
-              // Crumple-zone compliance: front/rear crumple zones yield strongly (1.10..1.42),
-              // mid-cabin beltline is stiffer (0.62..0.95) while doors still cave in cleanly.
+              // Crumple-zone compliance: front/rear crumple zones yield cleanly (0.95..1.18),
+              // mid-cabin doors/roof stay stiffer (0.55..0.85), glass is strongly damped (0.25).
               const zAbsNorm = Math.abs((rz - midZ) * invHalfLength);
               let compliance: number;
               if (zAbsNorm > 0.35) {
                 const fz = (zAbsNorm - 0.35) * 1.5384615;
-                compliance = 1.05 + 0.35 * (fz > 1 ? 1 : fz);
+                compliance = 0.95 + 0.23 * (fz > 1 ? 1 : fz);
               } else {
-                compliance = 0.65 + 0.4 * (zAbsNorm * 2.8571428);
+                compliance = 0.55 + 0.4 * (zAbsNorm * 2.8571428);
               }
+              compliance *= glassScale;
 
-              // Cumulative strain hardening: already-crumpled metal resists further collapse.
+              // Cumulative strain hardening: already-dented metal resists further collapse smoothly.
               const curDx = px - rx;
               const curDy = py - ry;
               const curDz = pz - rz;
               const curDispSq = curDx * curDx + curDy * curDy + curDz * curDz;
               const curDisp = curDispSq > 1e-10 ? Math.sqrt(curDispSq) : 0;
               if (curDisp >= capStop) continue;
-              const hardening = 0.22 + 0.78 * (1 - curDisp * invMaxCap);
+              const hardening = 0.2 + 0.8 * (1 - curDisp * invMaxCap);
 
               const corePush = maxDepth * compliance * falloff * hardening;
 
-              // Multi-scale deterministic material-space sheet-metal folds & sharp crinkles (triangle waves in [-1, 1]).
-              const ringWeight = 4 * t * (1 - t); // peaks at mid-ring, 0 at center & boundary
-              // Coarse structural fold (~0.32m wavelength)
-              const pCoarse = rx * 2.17 + ry * 1.73 + rz * 2.41;
-              const fCoarse = pCoarse - Math.floor(pCoarse);
-              const foldCoarse = fCoarse < 0.5 ? fCoarse * 4 - 1 : 3 - fCoarse * 4;
-              // Fine crinkled sheet-metal crease (~0.13m wavelength)
-              const pFineA = rx * 4.71 + ry * 3.19 + rz * 4.13;
-              const fFineA = pFineA - Math.floor(pFineA);
-              const creaseA = fFineA < 0.5 ? fFineA * 4 - 1 : 3 - fFineA * 4;
-              const pFineB = rx * 2.83 - ry * 5.29 + rz * 3.57;
-              const fFineB = pFineB - Math.floor(pFineB);
-              const creaseB = fFineB < 0.5 ? fFineB * 4 - 1 : 3 - fFineB * 4;
+              // Smooth, low-frequency coherent 3D car-space wave (3.6–4.8 rad/m, <= 12% buckle amplitude).
+              // Purely a function of rest (rx, ry, rz) so adjacent panels, trim, and grilles bend together seamlessly!
+              const ringWeight = 4 * t * (1 - t); // peaks mid-ring, 0 at center & boundary
+              const waveA = Math.sin(rx * 4.1 + ry * 3.6 + rz * 4.4);
+              const waveB = Math.cos(rx * 3.7 - ry * 4.6 + rz * 3.9);
+              const smoothBuckle = waveA * 0.6 + waveB * 0.4;
 
-              const buckle = foldCoarse * 0.5 + creaseA * 0.3 + creaseB * 0.2;
+              // Inward plastic dent + gentle <= 10% coherent sheet-metal ripple (zero jagged spikes).
+              const inward = isGlass ? corePush : corePush * (1 + 0.09 * smoothBuckle * (1 - t));
+              const lateralScale = isGlass ? 0 : corePush * 0.1 * ringWeight;
+              const lat1 = lateralScale * waveA;
+              const lat2 = lateralScale * waveB;
 
-              // Inward accordion crush + mid-ring crease modulation.
-              const inward = corePush * (1 + 0.24 * buckle * (1 - t));
-              const lateralScale = corePush * (0.28 + 0.14 * sideScrape) * ringWeight;
-              const lat1 = lateralScale * (foldCoarse * 0.55 + creaseA * 0.45);
-              const lat2 = lateralScale * (creaseB * 0.65 - foldCoarse * 0.35);
-
-              // Volume conservation:
-              // 1) Upward hood / trunk tent buckling & transverse accordion kinks on front/rear crashes.
+              // Subtle, realistic volume conservation (smooth upward hood/trunk bow + gentle fender bulge).
               let buckleY = 0;
               let flareX = 0;
-              if (frontCrush > 0 && rz > cMaxZ - 0.12) {
-                const hoodFrac = clamp((rz - (cMaxZ - 0.12)) * invFrontZoneSpan, 0, 1);
-                if (ry > hoodFloorY) {
-                  // Smooth tent peak mid-hood (4 * u * (1 - u)) + transverse accordion kink waves.
-                  const tent = 4 * hoodFrac * (1 - hoodFrac);
-                  const kinkPhase = rz * 2.8;
-                  const kinkFrac = kinkPhase - Math.floor(kinkPhase);
-                  const kinkWave = kinkFrac < 0.5 ? kinkFrac * 2 : 2 - kinkFrac * 2;
-                  const heightBias = clamp((ry - hoodFloorY) / (height * 0.42), 0.25, 1.0);
-                  buckleY = corePush * frontCrush * heightBias * (0.44 * tent + 0.18 * kinkWave * ringWeight);
-                }
-                const relX = rx - midX;
-                if (Math.abs(relX) > fenderFlareX) {
-                  flareX = (relX >= 0 ? 1 : -1) * corePush * frontCrush * 0.28 * (0.35 + 0.65 * ringWeight);
-                }
-              } else if (rearCrush > 0 && rz < cMinZ + 0.12) {
-                const trunkFrac = clamp(((cMinZ + 0.12) - rz) * invRearZoneSpan, 0, 1);
-                if (ry > hoodFloorY) {
-                  const tent = 4 * trunkFrac * (1 - trunkFrac);
-                  const kinkPhase = rz * 2.8;
-                  const kinkFrac = kinkPhase - Math.floor(kinkPhase);
-                  const kinkWave = kinkFrac < 0.5 ? kinkFrac * 2 : 2 - kinkFrac * 2;
-                  const heightBias = clamp((ry - hoodFloorY) / (height * 0.42), 0.25, 1.0);
-                  buckleY = corePush * rearCrush * heightBias * (0.38 * tent + 0.16 * kinkWave * ringWeight);
-                }
-                const relX = rx - midX;
-                if (Math.abs(relX) > fenderFlareX) {
-                  flareX = (relX >= 0 ? 1 : -1) * corePush * rearCrush * 0.26 * (0.35 + 0.65 * ringWeight);
+              if (!isGlass) {
+                if (frontCrush > 0 && rz > cMaxZ - 0.08) {
+                  const hoodFrac = clamp((rz - (cMaxZ - 0.08)) * invFrontZoneSpan, 0, 1);
+                  if (ry > hoodFloorY) {
+                    const tent = 4 * hoodFrac * (1 - hoodFrac);
+                    const heightBias = clamp((ry - hoodFloorY) / (height * 0.45), 0.2, 1.0);
+                    buckleY = corePush * frontCrush * heightBias * 0.18 * tent;
+                  }
+                  const relX = rx - midX;
+                  if (Math.abs(relX) > fenderFlareX) {
+                    flareX = (relX >= 0 ? 1 : -1) * corePush * frontCrush * 0.12 * ringWeight;
+                  }
+                } else if (rearCrush > 0 && rz < cMinZ + 0.08) {
+                  const trunkFrac = clamp(((cMinZ + 0.08) - rz) * invRearZoneSpan, 0, 1);
+                  if (ry > hoodFloorY) {
+                    const tent = 4 * trunkFrac * (1 - trunkFrac);
+                    const heightBias = clamp((ry - hoodFloorY) / (height * 0.45), 0.2, 1.0);
+                    buckleY = corePush * rearCrush * heightBias * 0.15 * tent;
+                  }
+                  const relX = rx - midX;
+                  if (Math.abs(relX) > fenderFlareX) {
+                    flareX = (relX >= 0 ? 1 : -1) * corePush * rearCrush * 0.11 * ringWeight;
+                  }
                 }
               }
 
-              // 2) Glancing side scrape horizontal gouge ridge along door/quarter beltline.
-              let scrapeX = 0;
-              if (sideScrape > 0 && ringWeight > 0.05) {
-                const beltPhase = ry * 6.2 + rz * 0.85;
-                const beltFrac = beltPhase - Math.floor(beltPhase);
-                const beltRidge = beltFrac < 0.5 ? beltFrac * 4 - 1 : 3 - beltFrac * 4;
-                scrapeX = nx * corePush * sideScrape * 0.22 * beltRidge * ringWeight;
-              }
+              let newX = px + nx * inward + t1x * lat1 + t2x * lat2 + flareX;
+              let newY = py + ny * inward + t1y * lat1 + t2y * lat2 + buckleY;
+              let newZ = pz + nz * inward + t1z * lat1 + t2z * lat2;
 
-              // 3) Outward displaced-metal lip bulge at dent rim.
-              let rimX = 0;
-              let rimY = 0;
-              let rimZ = 0;
-              if (dist > 1e-4 && ringWeight > 0.05) {
-                const invDist = 1 / dist;
-                const rdx = dx * invDist;
-                const rdy = dy * invDist;
-                const rdz = dz * invDist;
-                const dotN = rdx * nx + rdy * ny + rdz * nz;
-                const rimMag = corePush * (0.12 + 0.06 * longitudinalCrush) * ringWeight;
-                rimX = (rdx - dotN * nx) * rimMag;
-                rimY = (rdy - dotN * ny) * rimMag;
-                rimZ = (rdz - dotN * nz) * rimMag;
+              // Wheel-well clearance protection: keep fenders & bumper corners from slicing into the 4 spinning tires.
+              // If proposed position enters a wheel cylinder (and rest was outside), bow cleanly outward/upward around the arch!
+              if (Math.abs(newX - w0x) < WHEEL_WELL_HALF_WIDTH) {
+                const wy = newY - w0y;
+                const wz = newZ - w0z;
+                const rSq = wy * wy + wz * wz;
+                if (rSq < w0rSq) {
+                  const rRestY = ry - w0y;
+                  const rRestZ = rz - w0z;
+                  if (rRestY * rRestY + rRestZ * rRestZ >= w0rSq * 0.88) {
+                    if (rSq > 1e-6) {
+                      const push = w0r / Math.sqrt(rSq);
+                      newY = w0y + wy * push;
+                      newZ = w0z + wz * push;
+                    } else {
+                      newY = w0y + w0r;
+                    }
+                  }
+                }
+              } else if (Math.abs(newX - w1x) < WHEEL_WELL_HALF_WIDTH) {
+                const wy = newY - w1y;
+                const wz = newZ - w1z;
+                const rSq = wy * wy + wz * wz;
+                if (rSq < w1rSq) {
+                  const rRestY = ry - w1y;
+                  const rRestZ = rz - w1z;
+                  if (rRestY * rRestY + rRestZ * rRestZ >= w1rSq * 0.88) {
+                    if (rSq > 1e-6) {
+                      const push = w1r / Math.sqrt(rSq);
+                      newY = w1y + wy * push;
+                      newZ = w1z + wz * push;
+                    } else {
+                      newY = w1y + w1r;
+                    }
+                  }
+                }
               }
-
-              let newX = px + nx * inward + t1x * lat1 + t2x * lat2 + rimX + flareX + scrapeX;
-              let newY = py + ny * inward + t1y * lat1 + t2y * lat2 + rimY + buckleY;
-              let newZ = pz + nz * inward + t1z * lat1 + t2z * lat2 + rimZ;
+              if (Math.abs(newX - w2x) < WHEEL_WELL_HALF_WIDTH) {
+                const wy = newY - w2y;
+                const wz = newZ - w2z;
+                const rSq = wy * wy + wz * wz;
+                if (rSq < w2rSq) {
+                  const rRestY = ry - w2y;
+                  const rRestZ = rz - w2z;
+                  if (rRestY * rRestY + rRestZ * rRestZ >= w2rSq * 0.88) {
+                    if (rSq > 1e-6) {
+                      const push = w2r / Math.sqrt(rSq);
+                      newY = w2y + wy * push;
+                      newZ = w2z + wz * push;
+                    } else {
+                      newY = w2y + w2r;
+                    }
+                  }
+                }
+              } else if (Math.abs(newX - w3x) < WHEEL_WELL_HALF_WIDTH) {
+                const wy = newY - w3y;
+                const wz = newZ - w3z;
+                const rSq = wy * wy + wz * wz;
+                if (rSq < w3rSq) {
+                  const rRestY = ry - w3y;
+                  const rRestZ = rz - w3z;
+                  if (rRestY * rRestY + rRestZ * rRestZ >= w3rSq * 0.88) {
+                    if (rSq > 1e-6) {
+                      const push = w3r / Math.sqrt(rSq);
+                      newY = w3y + wy * push;
+                      newZ = w3z + wz * push;
+                    } else {
+                      newY = w3y + w3r;
+                    }
+                  }
+                }
+              }
 
               // Cumulative displacement cap relative to rest position.
               let totalDx = newX - rx;
@@ -782,16 +867,19 @@ export class RealDamageSimulator implements DamageSimulator {
                 meshMaxDisp = finalDisp;
               }
 
-              // Lazily allocate per-vertex damage/scuff intensity mask on first vertex mutation.
+              // Tight, localized damageIntensity: strictly 0 unless vertex deformed > 0.05 m inside the impact core!
+              // Smoothly ramps 0..1 over 0.05..0.24 m so clean undamaged doors/fenders stay 100% glossy paint.
               if (!dmgMask) {
                 dmgMask = new Float32Array(spatial.vertexCount);
                 entry.damageIntensity = dmgMask;
               }
-              const dispRatio = finalDisp * invMaxCap * 1.85;
-              const creaseBonus = Math.abs(buckle) * ringWeight * 0.48 + (buckleY > 0.01 ? 0.25 : 0);
-              const rawScuff = (dispRatio * 0.85 + falloff * (0.28 + creaseBonus) * speedScuffFactor);
-              const scuff = rawScuff > 1 ? 1 : rawScuff;
-              if (scuff > dmgMask[v]) dmgMask[v] = scuff;
+              if (!isGlass && finalDisp > SCUFF_MIN_DISPLACEMENT && t > 0.2) {
+                const dispRamp = (finalDisp - SCUFF_MIN_DISPLACEMENT) * invScuffSpan;
+                const clampedDisp = dispRamp > 1 ? 1 : dispRamp;
+                const coreMask = t >= 0.55 ? 1 : (t - 0.2) * 2.8571428;
+                const scuff = clampedDisp * clampedDisp * (3 - 2 * clampedDisp) * coreMask;
+                if (scuff > dmgMask[v]) dmgMask[v] = scuff;
+              }
 
               // Track dirty vertex range & mutated vertex list for O(k) normal recomputation.
               if (v < dirtyMin) dirtyMin = v;
@@ -805,7 +893,7 @@ export class RealDamageSimulator implements DamageSimulator {
                 }
                 this.touchedScratch[mutatedCount] = v;
               } else if (hasNormals) {
-                // Fast O(1) sharp analytical creased normal perturbation for mega-poly or unindexed meshes.
+                // Smooth analytical dent normal update for unindexed or mega-poly meshes.
                 if (!isDenseNormalBackup) {
                   const byteIdx = v >> 3;
                   const bit = 1 << (v & 7);
@@ -830,19 +918,17 @@ export class RealDamageSimulator implements DamageSimulator {
                     sparseCount++;
                   }
                 }
-                const rawSlope = 6 * t * (1 - t) * (corePush * invRadius) * 3.4;
-                const slope = rawSlope > 0.95 ? 0.95 : rawSlope < 0 ? 0 : rawSlope;
-                const foldSlope = (0.35 + 0.55 * falloff) * clamp(corePush * 4.5, 0.08, 0.95);
+                const rawSlope = 6 * t * (1 - t) * (corePush * invRadius) * 2.2;
+                const slope = rawSlope > 0.65 ? 0.65 : rawSlope < 0 ? 0 : rawSlope;
+                const waveTilt = isGlass ? 0 : slope * 0.22;
                 let vnx = normals![i3];
                 let vny = normals![i3 + 1];
                 let vnz = normals![i3 + 2];
                 if (dist > 1e-4) {
                   const invD = 1 / dist;
-                  const c1 = (foldCoarse * 0.65 + creaseA * 0.35) * foldSlope;
-                  const c2 = (creaseB * 0.65 - foldCoarse * 0.35) * foldSlope;
-                  vnx += dx * invD * slope + t1x * c1 + t2x * c2;
-                  vny += dy * invD * slope + t1y * c1 + t2y * c2 + (buckleY > 0.01 ? -0.35 * foldCoarse * foldSlope : 0);
-                  vnz += dz * invD * slope + t1z * c1 + t2z * c2;
+                  vnx += dx * invD * slope + t1x * (waveA * waveTilt) + t2x * (waveB * waveTilt);
+                  vny += dy * invD * slope + t1y * (waveA * waveTilt) + t2y * (waveB * waveTilt);
+                  vnz += dz * invD * slope + t1z * (waveA * waveTilt) + t2z * (waveB * waveTilt);
                 }
                 const vnLenSq = vnx * vnx + vny * vny + vnz * vnz;
                 if (vnLenSq > 1e-10) {
@@ -864,7 +950,7 @@ export class RealDamageSimulator implements DamageSimulator {
       }
 
       if (mutatedCount > 0) {
-        // Exact O(k) local triangle-recomputed creased normals when index buffer is available.
+        // Exact O(k) local triangle-recomputed area-weighted normals when index buffer is available.
         if (useExactTriNormals) {
           this.recomputeLocalTriangleNormals(entry, normals!, indices!, pos, mutatedCount);
         }
@@ -888,14 +974,14 @@ export class RealDamageSimulator implements DamageSimulator {
 
         if (group.detachable) {
           const fraction = mutatedCount / Math.max(1, spatial.vertexCount);
-          const share = energyJoules * clamp(0.5 + fraction * 1.15, 0.5, 1.0);
+          const share = energyJoules * clamp(0.45 + fraction * 1.0, 0.45, 1.0);
           const prev = groupEnergyBonus.get(group) ?? 0;
           if (share > prev) groupEnergyBonus.set(group, share);
         }
       }
     }
 
-    // Credit proximity impact energy to detachable parts even if their geometry is sparse or hit by explicit partId.
+    // Credit proximity impact energy to genuine bolt-on detachable attachments only.
     const newlyDetachedImpulses: DetachedPartImpulse[] = [];
     const newlyDetachedParts: DetachedPartEvent[] = [];
 
@@ -909,14 +995,14 @@ export class RealDamageSimulator implements DamageSimulator {
           (event.partId === group.logicalId || group.meshes.some((m) => m.payload.partId === event.partId));
         if (explicitMatch) {
           addedEnergy = energyJoules;
-        } else if (this.boundsOverlapSphere(group.bounds, ix, iy, iz, radius * 0.95)) {
+        } else if (this.boundsOverlapSphere(group.bounds, ix, iy, iz, radius * 0.85)) {
           const dist = Math.hypot(
             group.center[0] - ix,
             group.center[1] - iy,
             group.center[2] - iz,
           );
-          const prox = clamp(1 - dist / (radius * 1.65), 0, 1);
-          addedEnergy = energyJoules * prox * 0.72;
+          const prox = clamp(1 - dist / (radius * 1.4), 0, 1);
+          addedEnergy = energyJoules * prox * 0.65;
         }
       }
 
@@ -942,7 +1028,7 @@ export class RealDamageSimulator implements DamageSimulator {
         outY /= outLen;
         outZ /= outLen;
 
-        const launchSpeed = clamp(impactSpeed * 0.48 + deltaV * 0.32, 3.2, 18);
+        const launchSpeed = clamp(impactSpeed * 0.45 + deltaV * 0.3, 3.2, 16);
         const launchImpulse: [number, number, number] = [
           (outX * 0.65 - nx * 0.35) * launchSpeed,
           (0.5 + outY * 0.45) * launchSpeed,
@@ -953,7 +1039,7 @@ export class RealDamageSimulator implements DamageSimulator {
         const armX = cx - ix;
         const armY = cy - iy;
         const armZ = cz - iz;
-        const spinScale = clamp(impactSpeed * 0.42, 2.5, 13.0);
+        const spinScale = clamp(impactSpeed * 0.4, 2.5, 12.0);
         let angX = (armY * nz - armZ * ny) * spinScale;
         let angY = (armZ * nx - armX * nz) * spinScale;
         let angZ = (armX * ny - armY * nx) * spinScale;
@@ -1284,7 +1370,7 @@ export class RealDamageSimulator implements DamageSimulator {
     }
 
     // Corner impacts degrade wheel integrity AND structural wheel/axle geometry [FL, FR, RL, RR].
-    const wheelReach = Math.max(1.15, radius * 1.3);
+    const wheelReach = Math.max(1.15, radius * 1.35);
     const wheelDamage = this.health.wheelDamage!;
     for (let w = 0; w < 4; w++) {
       const [wx, wy, wz] = this.wheelPositions[w];

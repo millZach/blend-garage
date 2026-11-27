@@ -42,7 +42,13 @@ const REAR_WORDS = /(rear|tail|trunk|boot|exhaust|diffuser|spoiler|backlight|bac
 const FRONT_CORNER = /(^|[_\-\s.])(fl|fr|front[_\-\s]?(l|r|left|right))($|[_\-\s.])/;
 const REAR_CORNER = /(^|[_\-\s.])(rl|rr|bl|br|rear[_\-\s]?(l|r|left|right)|back[_\-\s]?(l|r|left|right))($|[_\-\s.])/;
 const WHEEL_WORDS = /(wheel|tire|tyre|rim|hub|lug|spoke)/;
-const NOT_SPINNING = /(caliper|brake[ _-]?pad|knuckle|upright|strut|spring|damper|shock|suspension|control[ _-]?arm|wishbone|tie[ _-]?rod|liner|wheelhouse|wheel[ _-]?well|arch|tub|splash|mudguard|housing|steering)/;
+/** Car body, arch, lamp, and aero meshes near the wheel opening that must NEVER spin or steer. */
+const BODY_NOT_WHEEL = /(wheelhouse|wheel[ _-]?well|arch|liner|tub|splash|mudguard|wake|deflector|outlet|felt|side[ _-]?marker|fender|wing|bumper|headlamp|headlight|reflector|body[ _-]?panel|car[ _-]?body|chassis|steering)/;
+/** Stationary brake/suspension hardware inside the wheel that steers with the front hub but NEVER spins. */
+const CARRIED_ONLY = /(caliper|brake[ _-]?pad|knuckle|upright|hub[ _-]?carrier|strut|spring|damper|shock|suspension|control[ _-]?arm|wishbone|tie[ _-]?rod|dust[ _-]?shield|backing[ _-]?plate)/;
+/** Individual off-axis wheel/tire/rotor details (spokes, bobbins, lugs, tread sipes, sidewall blocks) that MUST spin. */
+const SPINNING_WHEEL_PART = /(wheel|tyre|tire|rim|spoke|branch|rotor|disc|centerlock|centrelock|lug|bolt|stud|nut|valve|sidewall|sipe|tread|bead|barrel|flange|forging|bobbin)/;
+const SPINNING_WHEEL_MAT = /(wheel|tyre|tire|rim|alloy|centerlock|sidewall|carbon ceramic|brake.*friction)/;
 
 function sourceName(object: THREE.Object3D): string {
   for (let o: THREE.Object3D | null = object; o; o = o.parent) {
@@ -229,8 +235,40 @@ export function detectWheels(records: MeshRecord[], manifest: VehicleManifest, f
     const best = tires.filter((r) => Math.sign(r.center.x) === sx && Math.sign(r.center.z) === sz).sort((a, b) => b.size.y + b.size.z - (a.size.y + a.size.z))[0];
     if (best) {
       center = best.center.clone();
-      radius = (best.size.y + best.size.z) / 4;
+      radius = Math.max(best.size.y, best.size.z) / 2;
       width = best.size.x;
+      // Tires often have a flattened bottom contact patch whose bbox center sits several mm above
+      // the true axle; snap Y/Z to the largest truly circular rim/barrel/disc mesh inside the tire
+      // so spokes, rims, and centerlocks spin dead-concentric without cam wobble.
+      const tireD = Math.max(best.size.y, best.size.z);
+      const tireHalf = width / 2;
+      let bestRim: MeshRecord | null = null;
+      let bestRimD = 0;
+      for (const r of records) {
+        if (r === best) continue;
+        if (r.box.min.x < center.x - tireHalf - 0.075 || r.box.max.x > center.x + tireHalf + 0.075) continue;
+        const d = Math.max(r.size.y, r.size.z);
+        if (d < tireD * 0.42 || d > tireD * 0.90) continue;
+        if (Math.abs(r.size.y - r.size.z) / d >= 0.035) continue;
+        const offAxis = Math.hypot(r.center.y - center.y, r.center.z - center.z);
+        if (offAxis >= 0.04) continue;
+        if (
+          BODY_NOT_WHEEL.test(r.lower) ||
+          BODY_NOT_WHEEL.test(r.materialLower) ||
+          CARRIED_ONLY.test(r.lower) ||
+          CARRIED_ONLY.test(r.materialLower)
+        ) {
+          continue;
+        }
+        if (d > bestRimD) {
+          bestRimD = d;
+          bestRim = r;
+        }
+      }
+      if (bestRim) {
+        center.y = bestRim.center.y;
+        center.z = bestRim.center.z;
+      }
     } else {
       // Fall back to a manifest wheel in this quadrant, if it describes something wheel-sized.
       const guess = manifest.wheels.find((w) => w.radius > 0.2 && w.radius < 0.55 && Math.sign(w.center[0] * frontSign) === sx && Math.sign(w.center[2] * frontSign) === sz && Math.abs(w.center[0]) > 0.3);
@@ -246,14 +284,32 @@ export function detectWheels(records: MeshRecord[], manifest: VehicleManifest, f
     const spin: MeshRecord[] = [];
     const carried: MeshRecord[] = [];
     for (const r of records) {
-      if (r.box.min.x < center.x - half - 0.07 || r.box.max.x > center.x + half + 0.07) continue;
+      if (r.box.min.x < center.x - half - 0.075 || r.box.max.x > center.x + half + 0.075) continue;
       const offAxis = Math.hypot(r.center.y - center.y, r.center.z - center.z);
       const reach = offAxis + Math.max(r.size.y, r.size.z) / 2;
-      if (reach > radius * 1.04) continue;
+      if (reach > radius * 1.055) continue;
+
+      if (r === best) {
+        spin.push(r);
+        continue;
+      }
+
+      const isCarried =
+        CARRIED_ONLY.test(r.lower) ||
+        (CARRIED_ONLY.test(r.materialLower) && !SPINNING_WHEEL_PART.test(r.lower));
+      if (isCarried) {
+        if (reach < radius * 0.98) carried.push(r);
+        continue;
+      }
+
+      if (BODY_NOT_WHEEL.test(r.lower) || BODY_NOT_WHEEL.test(r.materialLower)) continue;
+
+      const isSpinPart = SPINNING_WHEEL_PART.test(r.lower) || SPINNING_WHEEL_MAT.test(r.materialLower);
+      if (/(body|paint)/.test(r.lower) || (/(body|paint)/.test(r.materialLower) && !isSpinPart)) continue;
+
       const round = Math.abs(r.size.y - r.size.z) / Math.max(r.size.y, r.size.z, 1e-3) < 0.12;
       const concentric = offAxis < 0.035 && round;
-      const blocked = NOT_SPINNING.test(r.lower) || NOT_SPINNING.test(r.materialLower);
-      if (r === best || (!blocked && (r.wheelAssembly !== null || concentric))) spin.push(r);
+      if (r.wheelAssembly !== null || concentric || isSpinPart) spin.push(r);
       else if (reach < radius * 0.98) carried.push(r);
     }
 

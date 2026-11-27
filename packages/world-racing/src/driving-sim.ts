@@ -1526,13 +1526,36 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       w.angularVelocityRad = angVel;
       w.spinAngleRad += angVel * dt;
 
-      // Estimate slip ratio for skidmarks & FX
+      // Estimate responsive, realistic tire slip ratio (0..1) for skidmarks & tire screech audio
       let slip = 0;
       if (inContact) {
-        const latSlip = absLat > 1.8 ? clamp((absLat - 1.8) / 7.5, 0, 1) : 0;
-        const handbrakeSlip = handbrake && isRear && Math.abs(forwardSpeedMs) > 2.5 ? 0.95 : 0;
-        const hardBrakeSlip = brake > 0.8 && Math.abs(forwardSpeedMs) > 9 ? 0.65 : 0;
-        const launchSlip = w.cfg.driven && throttle > 0.85 && Math.abs(forwardSpeedMs) < 8 ? 0.45 : 0;
+        const absFwd = Math.abs(forwardSpeedMs);
+        // 1. Lateral slide + high-speed hard cornering load
+        const latSlideSlip = absLat > 0.65 ? clamp((absLat - 0.65) / 3.55, 0, 1) : 0;
+        const steerDemand = Math.abs(forwardSpeedMs * w.steerAngleRad);
+        const cornerLoadSlip =
+          steerDemand > 1.9 ? clamp(((steerDemand - 1.9) / 4.0) * 0.78, 0, 0.78) : 0;
+        const latSlip = Math.max(latSlideSlip, cornerLoadSlip);
+
+        // 2. Hard braking lockup
+        let hardBrakeSlip = 0;
+        if (brake > 0.45 && absFwd > 4.5) {
+          const brakeNorm = clamp((brake - 0.45) / 0.55, 0, 1);
+          const speedNorm = clamp((absFwd - 4.5) / 14, 0, 1);
+          hardBrakeSlip = 0.35 + 0.50 * clamp(brakeNorm * 0.65 + speedNorm * 0.35, 0, 1);
+        }
+
+        // 3. Full-throttle 1st-gear wheelspin launch / burnout
+        let launchSlip = 0;
+        if (w.cfg.driven && this.gear !== 0 && throttle > 0.72 && absFwd < 13) {
+          const throttleNorm = clamp((throttle - 0.72) / 0.28, 0, 1);
+          const speedFade = clamp(1 - Math.max(0, absFwd - 3.5) / 9.5, 0, 1);
+          launchSlip = clamp((0.38 + 0.40 * throttleNorm) * (0.55 + 0.45 * speedFade), 0.38, 0.78);
+        }
+
+        // 4. Handbrake rear-wheel lock / drift
+        const handbrakeSlip = handbrake && isRear && absFwd > 1.2 ? 1.0 : 0;
+
         slip = clamp(Math.max(latSlip, handbrakeSlip, hardBrakeSlip, launchSlip), 0, 1);
       }
       w.slipRatio = slip;

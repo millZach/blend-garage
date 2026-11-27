@@ -732,14 +732,15 @@ export class VehicleRig {
     const maxV = Math.min(posAttr.count - 1, update.dirtyVertexMax);
     if (maxV < minV) return;
 
-    // Exposed dark primer / scuffed steel tint for crumpled creases
-    const primerR = 0.24;
-    const primerG = 0.23;
-    const primerB = 0.22;
+    // Subtle scratched clearcoat / exposed dark primer strictly inside deep creases
+    const primerR = 0.30;
+    const primerG = 0.29;
+    const primerB = 0.28;
     for (let v = minV; v <= maxV; v++) {
       const d = intensity[v];
-      if (d <= 0.005) continue;
-      const blend = Math.min(0.76, d * 0.82);
+      if (d <= 0.14) continue;
+      const t = (d - 0.14) / 0.86;
+      const blend = Math.min(0.42, t * t * 0.42);
       const inv = 1 - blend;
       const o = v * stride;
       const r0 = rest ? rest[o] : 1;

@@ -145,7 +145,7 @@ export interface RealDamageSimulatorOptions {
    * while `step(dt)` is advancing. Default: 0.05.
    */
   cooldownSeconds?: number;
-  /** Maximum cumulative vertex displacement from rest position in meters. Default: auto (~0.62–0.75 m). */
+  /** Maximum cumulative vertex displacement from rest position in meters. Default: auto (0.26–0.34 m). */
   maxVertexDisplacement?: number;
   /** Spatial grid cell size in meters for high-poly acceleration. Default: 0.22. */
   cellSize?: number;
@@ -153,6 +153,8 @@ export interface RealDamageSimulatorOptions {
   cabinBox?: DamageBounds;
   /** Optional explicit wheel centers [FL, FR, RL, RR] in vehicle-local meters. */
   wheelPositions?: [Vec3, Vec3, Vec3, Vec3];
+  /** Optional explicit wheel radii [FL, FR, RL, RR] in meters for wheel-well clearance protection. */
+  wheelRadii?: [number, number, number, number];
   /** Optional energy thresholds (Joules) overriding default detachment thresholds by partId or logical partId. */
   detachablePartThresholds?: Record<string, number>;
   /** Whether to locally recompute/perturb `payload.normals` when provided. Default: true. */

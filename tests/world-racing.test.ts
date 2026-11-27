@@ -556,6 +556,45 @@ describe('DrivingWorldSim (Rapier3D vehicle physics)', () => {
       sim.dispose();
     }
   });
+
+  it('produces responsive tire slipRatio on full-throttle launches, hard corners, hard braking, and handbrake drifts (zero when idle/airborne)', async () => {
+    const cfg = createVehiclePhysicsConfig(testManifest);
+    const sim = await DrivingWorldSim.create(cfg, flatRoadColliders);
+    try {
+      // Idle parked -> 0 slip
+      const parked = stepMany(sim, 40, idleInput).state;
+      expect(parked.slipRatio).toBe(0);
+
+      // 1. Full-throttle launch off the line -> 0.38..0.78 slip
+      const launch = stepMany(sim, 12, { throttle: 1, brake: 0, steer: 0, handbrake: false }).state;
+      expect(launch.slipRatio).toBeGreaterThanOrEqual(0.38);
+      expect(launch.slipRatio).toBeLessThanOrEqual(0.8);
+
+      // Build speed to ~22 m/s
+      stepMany(sim, 100, { throttle: 1, brake: 0, steer: 0, handbrake: false });
+
+      // 2. Hard fast cornering -> responsive lateral/corner-load slip
+      const corner = stepMany(sim, 20, { throttle: 0.5, brake: 0, steer: -1, handbrake: false }).state;
+      expect(corner.slipRatio).toBeGreaterThan(0.25);
+
+      // 3. Hard braking at speed -> 0.35..0.85 brake lockup slip
+      const hardBrake = stepMany(sim, 5, { throttle: 0, brake: 0.9, steer: 0, handbrake: false }).state;
+      expect(hardBrake.slipRatio).toBeGreaterThanOrEqual(0.35);
+      expect(hardBrake.slipRatio).toBeLessThanOrEqual(0.9);
+
+      // 4. Handbrake slide -> 1.0 peak slip
+      const hb = stepMany(sim, 4, { throttle: 0, brake: 0, steer: 0.5, handbrake: true }).state;
+      expect(hb.slipRatio).toBe(1);
+
+      // Airborne -> 0 slip
+      sim.resetPose([0, 8, 0], 0);
+      const air = sim.step(1 / 60, { throttle: 1, brake: 0, steer: -1, handbrake: true }).state;
+      expect(air.airborne).toBe(true);
+      expect(air.slipRatio).toBe(0);
+    } finally {
+      sim.dispose();
+    }
+  });
 });
 
 describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
