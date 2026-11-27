@@ -1,0 +1,1085 @@
+{
+  "schemaVersion": 1,
+  "id": "tesla-roadster-2026",
+  "name": "Tesla Roadster 2026",
+  "author": "Garage Builder",
+  "sourceFile": "tesla-roadster-2026.blend",
+  "importedAt": "2026-11-26T21:46:30.326742+00:00",
+  "modelUrl": "/cars/tesla-roadster-2026/model.glb",
+  "bounds": {
+    "min": [
+      -0.9952,
+      0,
+      -2.2294
+    ],
+    "max": [
+      0.9952,
+      1.1789,
+      2.2294
+    ],
+    "size": [
+      1.9904,
+      1.1789,
+      4.4588
+    ],
+    "center": [
+      0,
+      0.5895,
+      0
+    ]
+  },
+  "triangleCount": 1936594,
+  "objectCount": 171,
+  "wheels": [
+    {
+      "id": "wheel-assembly-fl",
+      "corner": "FL",
+      "objectName": "wheel_assembly_FL",
+      "center": [
+        0.7506,
+        0.359,
+        1.3896
+      ],
+      "radius": 0.374,
+      "width": 0.453
+    },
+    {
+      "id": "wheel-assembly-fr",
+      "corner": "FR",
+      "objectName": "wheel_assembly_FR",
+      "center": [
+        -0.7506,
+        0.359,
+        1.3897
+      ],
+      "radius": 0.374,
+      "width": 0.453
+    },
+    {
+      "id": "wheel-assembly-rl",
+      "corner": "RL",
+      "objectName": "wheel_assembly_RL",
+      "center": [
+        0.7926,
+        0.3845,
+        -1.4353
+      ],
+      "radius": 0.404,
+      "width": 0.4052
+    },
+    {
+      "id": "wheel-assembly-rr",
+      "corner": "RR",
+      "objectName": "wheel_assembly_RR",
+      "center": [
+        -0.7926,
+        0.3845,
+        -1.4353
+      ],
+      "radius": 0.404,
+      "width": 0.4052
+    }
+  ],
+  "parts": [
+    {
+      "id": "aft-diffuser-underside",
+      "label": "Aft Diffuser Underside",
+      "category": "aero",
+      "objectName": "Aft diffuser underside",
+      "defaultVisible": true
+    },
+    {
+      "id": "rear-bumper-and-plate-carrier",
+      "label": "Rear Bumper And Plate Carrier",
+      "category": "bumper",
+      "objectName": "Rear bumper and plate carrier",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-fender-r",
+      "label": "Front Fender R",
+      "category": "fender",
+      "objectName": "front_fender_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-fender-l",
+      "label": "Front Fender L",
+      "category": "fender",
+      "objectName": "front_fender_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-r",
+      "label": "Door R",
+      "category": "door",
+      "objectName": "door_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-l",
+      "label": "Door L",
+      "category": "door",
+      "objectName": "door_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "hood",
+      "label": "Hood",
+      "category": "hood",
+      "objectName": "hood",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-card-r",
+      "label": "Door Card R",
+      "category": "door",
+      "objectName": "Door card R",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-card-l",
+      "label": "Door Card L",
+      "category": "door",
+      "objectName": "Door card L",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-carbon-splitter",
+      "label": "Front Carbon Splitter",
+      "category": "aero",
+      "objectName": "Front carbon splitter",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-glass-l",
+      "label": "Door Glass L",
+      "category": "door",
+      "objectName": "door_glass_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-glass-r",
+      "label": "Door Glass R",
+      "category": "door",
+      "objectName": "door_glass_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-splitter-wing-l",
+      "label": "Front Splitter Wing L",
+      "category": "aero",
+      "objectName": "Front splitter wing L",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-splitter-wing-r",
+      "label": "Front Splitter Wing R",
+      "category": "aero",
+      "objectName": "Front splitter wing R",
+      "defaultVisible": true
+    },
+    {
+      "id": "fender-camera-and-amber-marker-l",
+      "label": "Fender Camera And Amber Marker L",
+      "category": "fender",
+      "objectName": "Fender camera and amber marker L",
+      "defaultVisible": true
+    },
+    {
+      "id": "fender-camera-and-amber-marker-r",
+      "label": "Fender Camera And Amber Marker R",
+      "category": "fender",
+      "objectName": "Fender camera and amber marker R",
+      "defaultVisible": true
+    },
+    {
+      "id": "interior-rearview-mirror",
+      "label": "Interior Rearview Mirror",
+      "category": "mirror",
+      "objectName": "Interior rearview mirror",
+      "defaultVisible": true
+    }
+  ],
+  "slots": [],
+  "materialZones": [
+    {
+      "id": "body",
+      "materialName": "body",
+      "role": "primary",
+      "defaultColor": "#bfc1c4",
+      "meshNames": [
+        "hood",
+        "upper_cowl",
+        "front_fender_l",
+        "lamp_lower_lid_l",
+        "lamp_upper_lid_l",
+        "door_l",
+        "door_release_l",
+        "rear_quarter_l",
+        "roof_rail_l",
+        "front_fender_r",
+        "lamp_lower_lid_r",
+        "lamp_upper_lid_r",
+        "door_r",
+        "door_release_r",
+        "rear_quarter_r",
+        "roof_rail_r",
+        "tail_brow",
+        "Rear light panel and shelf",
+        "Active wing blade"
+      ]
+    },
+    {
+      "id": "caliper",
+      "materialName": "caliper",
+      "role": "accent",
+      "defaultColor": "#484848",
+      "meshNames": [
+        "Steering carrier FL",
+        "Steering carrier FR",
+        "Rear carrier RL",
+        "Rear carrier RR"
+      ]
+    },
+    {
+      "id": "glass-edge",
+      "materialName": "glass_edge",
+      "role": "glass",
+      "defaultColor": "#1d1d1d",
+      "meshNames": [
+        "screen_header",
+        "roof_rear_header",
+        "glass_rear_foot",
+        "Fender camera and amber marker L",
+        "Fender camera and amber marker R",
+        "windscreen_glass",
+        "roof_pane_l",
+        "front_quarterlight_l",
+        "door_glass_l",
+        "rear_quarterlight_l",
+        "roof_pane_r",
+        "front_quarterlight_r",
+        "door_glass_r",
+        "rear_quarterlight_r",
+        "backlight_glass"
+      ]
+    },
+    {
+      "id": "glass",
+      "materialName": "glass",
+      "role": "glass",
+      "defaultColor": "#ffffff",
+      "meshNames": [
+        "windscreen_glass",
+        "roof_pane_l",
+        "front_quarterlight_l",
+        "door_glass_l",
+        "rear_quarterlight_l",
+        "roof_pane_r",
+        "front_quarterlight_r",
+        "door_glass_r",
+        "rear_quarterlight_r",
+        "backlight_glass"
+      ]
+    },
+    {
+      "id": "carbon",
+      "materialName": "carbon",
+      "role": "trim",
+      "defaultColor": "#323232",
+      "meshNames": [
+        "carbon_rocker_l",
+        "carbon_rocker_r",
+        "Lower rear aero wing L",
+        "Lower rear aero wing R",
+        "Seat shell L",
+        "Seat insert L",
+        "Seat monogram L",
+        "Door card L",
+        "Door card R",
+        "Dashboard",
+        "Instrument binnacle",
+        "Center console",
+        "Console tray and armrest",
+        "Rear compartment liner",
+        "Passenger bay lower enclosure",
+        "Inner sill floor L",
+        "Inner sill floor R",
+        "Aft diffuser underside"
+      ]
+    },
+    {
+      "id": "trim",
+      "materialName": "trim",
+      "role": "trim",
+      "defaultColor": "#323232",
+      "meshNames": [
+        "hood",
+        "upper_cowl",
+        "lamp_lower_lid_l",
+        "lamp_upper_lid_l",
+        "door_release_l",
+        "arch_flange_fl",
+        "arch_flange_rl",
+        "door_jamb_l",
+        "lamp_lower_lid_r",
+        "lamp_upper_lid_r",
+        "door_release_r",
+        "arch_flange_fr",
+        "arch_flange_rr",
+        "door_jamb_r",
+        "wing_well_wall",
+        "Front dark upper fascia",
+        "Inset front grille vanes",
+        "Front center camera badge",
+        "Rear light panel and shelf",
+        "Rear center camera housing",
+        "Lower rear aero wing L",
+        "Lower rear aero wing R",
+        "Four aft thrust outlet bells",
+        "Stowed headlamp reflectors L",
+        "Stowed headlamp reflectors R",
+        "Wheel FL",
+        "Wheel FR",
+        "Wheel RL",
+        "Wheel RR",
+        "Fender camera and amber marker L",
+        "Fender camera and amber marker R",
+        "Active wing blade",
+        "Parked cowl wiper",
+        "Instrument binnacle",
+        "Interior rearview mirror",
+        "Console tray and armrest",
+        "Steering column",
+        "Driver display",
+        "Brake pedal",
+        "Accelerator pedal",
+        "Footwell pedal carrier",
+        "Tank straps",
+        "Passenger bay vessel",
+        "Front undertray",
+        "Inner sill floor L",
+        "Inner sill floor R",
+        "Wheel opening corner returns FL",
+        "Wheel opening corner returns FR",
+        "Wheel opening corner returns RL",
+        "Wheel opening corner returns RR"
+      ]
+    },
+    {
+      "id": "rubber",
+      "materialName": "rubber",
+      "role": "trim",
+      "defaultColor": "#232323",
+      "meshNames": [
+        "Wheel FL",
+        "Wheel FR",
+        "Wheel RL",
+        "Wheel RR",
+        "Parked cowl wiper",
+        "windscreen_glass_seal",
+        "roof_pane_l_seal",
+        "front_quarterlight_l_seal",
+        "door_glass_l",
+        "door_glass_l_seal",
+        "rear_quarterlight_l_seal",
+        "roof_pane_r_seal",
+        "front_quarterlight_r_seal",
+        "door_glass_r",
+        "door_glass_r_seal",
+        "rear_quarterlight_r_seal",
+        "backlight_glass_seal",
+        "Yoke switches",
+        "Driver footrest",
+        "Footwell pedal carrier",
+        "Tank straps"
+      ]
+    },
+    {
+      "id": "tyre",
+      "materialName": "tyre",
+      "role": "trim",
+      "defaultColor": "#1f1f21",
+      "meshNames": [
+        "Wheel FL",
+        "Wheel FR",
+        "Wheel RL",
+        "Wheel RR"
+      ]
+    },
+    {
+      "id": "aft-carbon",
+      "materialName": "aft_carbon",
+      "role": "trim",
+      "defaultColor": "#373839",
+      "meshNames": [
+        "Four carbon fan passages",
+        "Rear outlet brow and cheeks"
+      ]
+    },
+    {
+      "id": "moulded-carbon",
+      "materialName": "moulded_carbon",
+      "role": "trim",
+      "defaultColor": "#181919",
+      "meshNames": [
+        "Front carbon splitter",
+        "Front intake interior returns",
+        "Front splitter wing L",
+        "Front corner duct return L",
+        "Front splitter wing R",
+        "Front corner duct return R",
+        "Rear bumper and plate carrier"
+      ]
+    },
+    {
+      "id": "aft-brow-carbon",
+      "materialName": "aft_brow_carbon",
+      "role": "trim",
+      "defaultColor": "#1d1d1e",
+      "meshNames": [
+        "Rear outlet brow and cheeks"
+      ]
+    },
+    {
+      "id": "lamp-white-unlit",
+      "materialName": "lamp_white_unlit",
+      "role": "headlight",
+      "defaultColor": "#cdd3d4",
+      "meshNames": [
+        "Front continuous running lamp",
+        "Rear plate lamps",
+        "Main LED cells L",
+        "Main LED cells R"
+      ]
+    },
+    {
+      "id": "front-drl",
+      "materialName": "front_drl",
+      "role": "headlight",
+      "defaultColor": "#eff2f8",
+      "meshNames": [
+        "Front continuous running lamp"
+      ]
+    },
+    {
+      "id": "lamp-white",
+      "materialName": "lamp_white",
+      "role": "headlight",
+      "defaultColor": "#f3f3f3",
+      "meshNames": [
+        "Main LED cells L",
+        "Main LED cells R"
+      ]
+    },
+    {
+      "id": "black",
+      "materialName": "black",
+      "role": "other",
+      "defaultColor": "#1d1d1d",
+      "meshNames": [
+        "nose_shut_recess_l",
+        "marker_return_l",
+        "wheelhouse_fl",
+        "wheelhouse_rl",
+        "nose_shut_recess_r",
+        "marker_return_r",
+        "wheelhouse_fr",
+        "wheelhouse_rr",
+        "roof_spine",
+        "wing_well_floor",
+        "Front dark upper fascia",
+        "Front intake interior returns",
+        "Front center camera badge",
+        "Rear light panel and shelf",
+        "Rear bumper and plate carrier",
+        "Rear center camera housing",
+        "Four aft thrust outlet bells",
+        "Aft duct fan 1",
+        "Aft duct fan 2",
+        "Aft duct fan 3",
+        "Aft duct fan 4",
+        "Four carbon fan passages",
+        "Rear nozzle recess",
+        "Rear plate concealed mounting pads",
+        "Rear plate lamp housings",
+        "Stowed headlamp reflectors L",
+        "Stowed headlamp reflectors R",
+        "Wheel FL",
+        "Wheel FR",
+        "Wheel RL",
+        "Wheel RR",
+        "Fender camera and amber marker L",
+        "Fender camera and amber marker R",
+        "Seat shell L",
+        "Seat insert L",
+        "Door card L",
+        "Sill pad L",
+        "Door card R",
+        "Sill pad R",
+        "Dashboard",
+        "Footwell and floor",
+        "Instrument binnacle",
+        "Interior rearview mirror",
+        "Console tray and armrest",
+        "Yoke",
+        "Yoke switches",
+        "Yoke paddle controls",
+        "Driver display mount",
+        "Driver footrest",
+        "Brake pedal",
+        "Accelerator pedal",
+        "Footwell pedal carrier",
+        "Tank straps",
+        "Inboard wheel tub FL",
+        "Inboard wheel tub FR",
+        "Inboard wheel tub RL",
+        "Inboard wheel tub RR"
+      ]
+    },
+    {
+      "id": "fabric",
+      "materialName": "fabric",
+      "role": "other",
+      "defaultColor": "#303030",
+      "meshNames": [
+        "Seat belt and latch L",
+        "Dashboard",
+        "Footwell and floor",
+        "Instrument binnacle",
+        "Console tray and armrest",
+        "Rear compartment liner"
+      ]
+    },
+    {
+      "id": "rocket-graphite-frame",
+      "materialName": "Rocket graphite frame",
+      "role": "other",
+      "defaultColor": "#4e5356",
+      "meshNames": [
+        "Rocket exposed floor frame and inset bays",
+        "Rocket bay edge returns and mounting lands",
+        "Rocket recessed lift outlet FL",
+        "Rocket recessed lift outlet FR",
+        "Rocket recessed lift outlet RL",
+        "Rocket recessed lift outlet RR"
+      ]
+    },
+    {
+      "id": "rocket-charcoal-bay-insert",
+      "materialName": "Rocket charcoal bay insert",
+      "role": "other",
+      "defaultColor": "#292d30",
+      "meshNames": [
+        "Rocket exposed floor frame and inset bays",
+        "Rocket recessed lift outlet FL",
+        "Rocket recessed lift outlet FR",
+        "Rocket recessed lift outlet RL",
+        "Rocket recessed lift outlet RR"
+      ]
+    },
+    {
+      "id": "rocket-pressed-aft-cover",
+      "materialName": "Rocket pressed aft cover",
+      "role": "other",
+      "defaultColor": "#6c7175",
+      "meshNames": [
+        "Rocket exposed floor frame and inset bays",
+        "Rocket bay edge returns and mounting lands"
+      ]
+    },
+    {
+      "id": "wheel",
+      "materialName": "wheel",
+      "role": "other",
+      "defaultColor": "#323437",
+      "meshNames": [
+        "Aft duct fan 1",
+        "Aft duct fan 2",
+        "Aft duct fan 3",
+        "Aft duct fan 4",
+        "Wheel FL",
+        "Vented rotor FL",
+        "Wheel FR",
+        "Vented rotor FR",
+        "Wheel RL",
+        "Vented rotor RL",
+        "Wheel RR",
+        "Vented rotor RR",
+        "Wing lower link L",
+        "Wing upper link L",
+        "Wing lower link R",
+        "Wing upper link R",
+        "Parked cowl wiper"
+      ]
+    },
+    {
+      "id": "wheel-blade",
+      "materialName": "wheel_blade",
+      "role": "other",
+      "defaultColor": "#060709",
+      "meshNames": [
+        "Wheel FL",
+        "Wheel FR",
+        "Wheel RL",
+        "Wheel RR"
+      ]
+    },
+    {
+      "id": "wheel-insert",
+      "materialName": "wheel_insert",
+      "role": "other",
+      "defaultColor": "#82858b",
+      "meshNames": [
+        "Wheel FL",
+        "Wheel FR",
+        "Wheel RL",
+        "Wheel RR"
+      ]
+    },
+    {
+      "id": "wheel-centre",
+      "materialName": "wheel_centre",
+      "role": "other",
+      "defaultColor": "#0d0e10",
+      "meshNames": [
+        "Wheel FL",
+        "Wheel FR",
+        "Wheel RL",
+        "Wheel RR"
+      ]
+    },
+    {
+      "id": "metal",
+      "materialName": "metal",
+      "role": "other",
+      "defaultColor": "#aaaaaa",
+      "meshNames": [
+        "Four aft thrust outlet bells",
+        "Stowed headlamp reflectors L",
+        "Stowed headlamp reflectors R",
+        "Wing lower link L",
+        "Wing upper link L",
+        "Wing lower link R",
+        "Wing upper link R",
+        "Seat belt and latch L",
+        "Instrument binnacle",
+        "Instrument dial",
+        "Interior rearview mirror",
+        "Console tray and armrest",
+        "Yoke",
+        "Yoke ivory grips",
+        "Yoke switches",
+        "Yoke paddle controls",
+        "Driver footrest",
+        "Brake pedal",
+        "Accelerator pedal",
+        "Footwell pedal carrier",
+        "Tank straps"
+      ]
+    },
+    {
+      "id": "brake",
+      "materialName": "brake",
+      "role": "other",
+      "defaultColor": "#797979",
+      "meshNames": [
+        "Vented rotor FL",
+        "Vented rotor FR",
+        "Vented rotor RL",
+        "Vented rotor RR",
+        "Rocket bay edge returns and mounting lands",
+        "Rocket recessed lift outlet FL",
+        "Rocket recessed lift outlet FR",
+        "Rocket recessed lift outlet RL",
+        "Rocket recessed lift outlet RR"
+      ]
+    },
+    {
+      "id": "tank",
+      "materialName": "tank",
+      "role": "other",
+      "defaultColor": "#1e2123",
+      "meshNames": [
+        "Cabin tank"
+      ]
+    },
+    {
+      "id": "bright-metal",
+      "materialName": "bright_metal",
+      "role": "other",
+      "defaultColor": "#dddddd",
+      "meshNames": [
+        "Four aft thrust outlet bells",
+        "Stowed headlamp reflectors L",
+        "Headlamp optic fluting L",
+        "Stowed headlamp reflectors R",
+        "Headlamp optic fluting R",
+        "Instrument binnacle",
+        "Instrument dial",
+        "Console tray and armrest",
+        "Yoke",
+        "Yoke ivory grips",
+        "Yoke switches",
+        "Driver display graphics"
+      ]
+    },
+    {
+      "id": "leather",
+      "materialName": "leather",
+      "role": "other",
+      "defaultColor": "#323232",
+      "meshNames": [
+        "Seat shell L",
+        "Seat cushion L",
+        "Seat insert L",
+        "Instrument binnacle",
+        "Console tray and armrest",
+        "Yoke",
+        "Yoke ivory grips"
+      ]
+    },
+    {
+      "id": "pale-leather",
+      "materialName": "pale_leather",
+      "role": "other",
+      "defaultColor": "#dad8d3",
+      "meshNames": [
+        "Seat shell L",
+        "Headrest pad L",
+        "Seat insert L",
+        "Yoke ivory grips"
+      ]
+    },
+    {
+      "id": "seat-suede",
+      "materialName": "seat_suede",
+      "role": "other",
+      "defaultColor": "#605a55",
+      "meshNames": [
+        "Seat shell L",
+        "Seat insert L"
+      ]
+    },
+    {
+      "id": "seat",
+      "materialName": "seat",
+      "role": "other",
+      "defaultColor": "#dedbd6",
+      "meshNames": [
+        "Seat shell L",
+        "Seat cushion L"
+      ]
+    },
+    {
+      "id": "door-soft-upper",
+      "materialName": "door_soft_upper",
+      "role": "other",
+      "defaultColor": "#14181d",
+      "meshNames": [
+        "Door card L",
+        "Door card R"
+      ]
+    },
+    {
+      "id": "door-inset-diffuser",
+      "materialName": "door_inset_diffuser",
+      "role": "other",
+      "defaultColor": "#524f4f",
+      "meshNames": [
+        "Door card L",
+        "Door card R"
+      ]
+    },
+    {
+      "id": "door-recess",
+      "materialName": "door_recess",
+      "role": "other",
+      "defaultColor": "#070d12",
+      "meshNames": [
+        "Door card L",
+        "Door card R"
+      ]
+    },
+    {
+      "id": "lamp-red-unlit",
+      "materialName": "lamp_red_unlit",
+      "role": "other",
+      "defaultColor": "#791012",
+      "meshNames": [
+        "Continuous rear lamp",
+        "Seat insert L",
+        "Driver display graphics"
+      ]
+    },
+    {
+      "id": "aft-rotor-sleeve",
+      "materialName": "aft_rotor_sleeve",
+      "role": "other",
+      "defaultColor": "#4e4e50",
+      "meshNames": [
+        "Aft duct fan 1",
+        "Aft duct fan 2",
+        "Aft duct fan 3",
+        "Aft duct fan 4"
+      ]
+    },
+    {
+      "id": "aft-rotor-satin",
+      "materialName": "aft_rotor_satin",
+      "role": "other",
+      "defaultColor": "#3d3c3c",
+      "meshNames": [
+        "Aft duct fan 1",
+        "Aft duct fan 2",
+        "Aft duct fan 3",
+        "Aft duct fan 4"
+      ]
+    },
+    {
+      "id": "aft-rotor-housing",
+      "materialName": "aft_rotor_housing",
+      "role": "other",
+      "defaultColor": "#383838",
+      "meshNames": [
+        "Aft duct fan 1",
+        "Aft duct fan 2",
+        "Aft duct fan 3",
+        "Aft duct fan 4"
+      ]
+    },
+    {
+      "id": "aft-rotor-vane",
+      "materialName": "aft_rotor_vane",
+      "role": "other",
+      "defaultColor": "#29292b",
+      "meshNames": [
+        "Aft duct fan 1",
+        "Aft duct fan 2",
+        "Aft duct fan 3",
+        "Aft duct fan 4"
+      ]
+    },
+    {
+      "id": "stitch",
+      "materialName": "stitch",
+      "role": "other",
+      "defaultColor": "#a8a8a8",
+      "meshNames": [
+        "Seat insert L",
+        "Yoke switches"
+      ]
+    },
+    {
+      "id": "rear-carrier-satin",
+      "materialName": "rear_carrier_satin",
+      "role": "other",
+      "defaultColor": "#1b1c1d",
+      "meshNames": [
+        "Rear bumper and plate carrier"
+      ]
+    },
+    {
+      "id": "aft-brow-lip",
+      "materialName": "aft_brow_lip",
+      "role": "other",
+      "defaultColor": "#353537",
+      "meshNames": [
+        "Rear outlet brow and cheeks"
+      ]
+    },
+    {
+      "id": "rocket-throat-interior",
+      "materialName": "Rocket throat interior",
+      "role": "other",
+      "defaultColor": "#181b1d",
+      "meshNames": [
+        "Rocket recessed lift outlet FL",
+        "Rocket recessed lift outlet FR",
+        "Rocket recessed lift outlet RL",
+        "Rocket recessed lift outlet RR"
+      ]
+    },
+    {
+      "id": "tail-surround",
+      "materialName": "tail_surround",
+      "role": "other",
+      "defaultColor": "#12070d",
+      "meshNames": [
+        "Rear light panel and shelf"
+      ]
+    },
+    {
+      "id": "tail-shelf-red",
+      "materialName": "tail_shelf_red",
+      "role": "other",
+      "defaultColor": "#c5101f",
+      "meshNames": [
+        "Rear light panel and shelf"
+      ]
+    },
+    {
+      "id": "tail-shelf-lip",
+      "materialName": "tail_shelf_lip",
+      "role": "other",
+      "defaultColor": "#84797c",
+      "meshNames": [
+        "Rear light panel and shelf"
+      ]
+    },
+    {
+      "id": "badge",
+      "materialName": "badge",
+      "role": "other",
+      "defaultColor": "#868686",
+      "meshNames": [
+        "Front center camera badge",
+        "Four aft thrust outlet bells"
+      ]
+    },
+    {
+      "id": "yoke-suede",
+      "materialName": "yoke_suede",
+      "role": "other",
+      "defaultColor": "#1d1f23",
+      "meshNames": [
+        "Yoke",
+        "Yoke ivory grips"
+      ]
+    },
+    {
+      "id": "display",
+      "materialName": "display",
+      "role": "other",
+      "defaultColor": "#181818",
+      "meshNames": [
+        "Front center camera badge",
+        "Rear center camera housing",
+        "Driver display glass"
+      ]
+    },
+    {
+      "id": "display-red",
+      "materialName": "display_red",
+      "role": "other",
+      "defaultColor": "#841610",
+      "meshNames": [
+        "Seat monogram L",
+        "Instrument dial",
+        "Yoke switches",
+        "Driver display graphics"
+      ]
+    },
+    {
+      "id": "plate",
+      "materialName": "plate",
+      "role": "other",
+      "defaultColor": "#949494",
+      "meshNames": [
+        "Rear show plate",
+        "RDSTR embossed characters"
+      ]
+    },
+    {
+      "id": "tail-optic-core",
+      "materialName": "tail_optic_core",
+      "role": "other",
+      "defaultColor": "#160400",
+      "meshNames": [
+        "Continuous rear lamp"
+      ]
+    },
+    {
+      "id": "tail-optic-border",
+      "materialName": "tail_optic_border",
+      "role": "other",
+      "defaultColor": "#7e0703",
+      "meshNames": [
+        "Continuous rear lamp"
+      ]
+    },
+    {
+      "id": "marker-bezel",
+      "materialName": "marker_bezel",
+      "role": "other",
+      "defaultColor": "#0d0d10",
+      "meshNames": [
+        "Rear red side marker L",
+        "Rear red side marker R"
+      ]
+    },
+    {
+      "id": "marker-return",
+      "materialName": "marker_return",
+      "role": "other",
+      "defaultColor": "#656565",
+      "meshNames": [
+        "Rear red side marker L",
+        "Rear red side marker R"
+      ]
+    },
+    {
+      "id": "marker-reflector",
+      "materialName": "marker_reflector",
+      "role": "other",
+      "defaultColor": "#3a0307",
+      "meshNames": [
+        "Rear red side marker L",
+        "Rear red side marker R"
+      ]
+    },
+    {
+      "id": "marker-red-optic",
+      "materialName": "marker_red_optic",
+      "role": "other",
+      "defaultColor": "#950503",
+      "meshNames": [
+        "Rear red side marker L",
+        "Rear red side marker R"
+      ]
+    },
+    {
+      "id": "marker-core",
+      "materialName": "marker_core",
+      "role": "other",
+      "defaultColor": "#b3462b",
+      "meshNames": [
+        "Rear red side marker L",
+        "Rear red side marker R"
+      ]
+    },
+    {
+      "id": "marker",
+      "materialName": "marker",
+      "role": "other",
+      "defaultColor": "#c56023",
+      "meshNames": [
+        "Fender camera and amber marker L",
+        "Fender camera and amber marker R"
+      ]
+    },
+    {
+      "id": "lamp-lens",
+      "materialName": "lamp_lens",
+      "role": "other",
+      "defaultColor": "#f7f7f7",
+      "meshNames": [
+        "Individual headlamp lenses L",
+        "Individual headlamp lenses R"
+      ]
+    },
+    {
+      "id": "plate-illuminator",
+      "materialName": "plate_illuminator",
+      "role": "other",
+      "defaultColor": "#f0f0f0",
+      "meshNames": [
+        "Rear plate lamps"
+      ]
+    }
+  ],
+  "hints": [
+    "Detected car length along Blender X-axis; rotated 90° so it parks lengthwise inside garage bays."
+  ]
+}

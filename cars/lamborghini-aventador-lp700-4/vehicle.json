@@ -1,0 +1,1678 @@
+{
+  "schemaVersion": 1,
+  "id": "lamborghini-aventador-lp700-4",
+  "name": "Lamborghini Aventador Lp700 4",
+  "author": "Garage Builder",
+  "sourceFile": "lamborghini-aventador-lp700-4.blend",
+  "importedAt": "2026-11-27T01:54:03.833934+00:00",
+  "modelUrl": "/cars/lamborghini-aventador-lp700-4/model.glb",
+  "bounds": {
+    "min": [
+      -1.1325,
+      0.0,
+      -2.39
+    ],
+    "max": [
+      1.1325,
+      1.136,
+      2.39
+    ],
+    "size": [
+      2.265,
+      1.136,
+      4.78
+    ],
+    "center": [
+      0.0,
+      0.568,
+      0.0
+    ]
+  },
+  "triangleCount": 3958400,
+  "objectCount": 384,
+  "wheels": [
+    {
+      "id": "wheel-assembly-fl",
+      "corner": "FL",
+      "objectName": "wheel_assembly_FL",
+      "center": [
+        0.7544,
+        0.3591,
+        1.245
+      ],
+      "radius": 0.3761,
+      "width": 0.4677
+    },
+    {
+      "id": "wheel-assembly-fr",
+      "corner": "FR",
+      "objectName": "wheel_assembly_FR",
+      "center": [
+        -0.7544,
+        0.3591,
+        1.245
+      ],
+      "radius": 0.3761,
+      "width": 0.4677
+    },
+    {
+      "id": "wheel-assembly-rl",
+      "corner": "RL",
+      "objectName": "wheel_assembly_RL",
+      "center": [
+        0.7494,
+        0.3771,
+        -1.4548
+      ],
+      "radius": 0.4008,
+      "width": 0.5377
+    },
+    {
+      "id": "wheel-assembly-rr",
+      "corner": "RR",
+      "objectName": "wheel_assembly_RR",
+      "center": [
+        -0.7494,
+        0.3771,
+        -1.4548
+      ],
+      "radius": 0.4008,
+      "width": 0.5377
+    }
+  ],
+  "parts": [
+    {
+      "id": "front-bumper",
+      "label": "Front Bumper",
+      "category": "bumper",
+      "objectName": "front_bumper",
+      "defaultVisible": true
+    },
+    {
+      "id": "rear-bumper",
+      "label": "Rear Bumper",
+      "category": "bumper",
+      "objectName": "rear_bumper",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-splitter",
+      "label": "Front Splitter",
+      "category": "aero",
+      "objectName": "front_splitter",
+      "defaultVisible": true
+    },
+    {
+      "id": "rear-diffuser-floor",
+      "label": "Rear Diffuser Floor",
+      "category": "aero",
+      "objectName": "rear_diffuser_floor",
+      "defaultVisible": true
+    },
+    {
+      "id": "underbody-diffuser-feed",
+      "label": "Underbody Diffuser Feed",
+      "category": "aero",
+      "objectName": "underbody_diffuser_feed",
+      "defaultVisible": true
+    },
+    {
+      "id": "rear-diffuser-seven-vanes",
+      "label": "Rear Diffuser Seven Vanes",
+      "category": "aero",
+      "objectName": "rear_diffuser_seven_vanes",
+      "defaultVisible": true
+    },
+    {
+      "id": "rear-spoiler",
+      "label": "Rear Spoiler",
+      "category": "spoiler",
+      "objectName": "rear_spoiler",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-fender-r",
+      "label": "Front Fender R",
+      "category": "fender",
+      "objectName": "front_fender_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "front-fender-l",
+      "label": "Front Fender L",
+      "category": "fender",
+      "objectName": "front_fender_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "hood",
+      "label": "Hood",
+      "category": "hood",
+      "objectName": "hood",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-r",
+      "label": "Door R",
+      "category": "door",
+      "objectName": "door_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-l",
+      "label": "Door L",
+      "category": "door",
+      "objectName": "door_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-trim-l",
+      "label": "Cabin Door Trim L",
+      "category": "door",
+      "objectName": "cabin_door_trim_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-trim-r",
+      "label": "Cabin Door Trim R",
+      "category": "door",
+      "objectName": "cabin_door_trim_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-glass-r",
+      "label": "Door Glass R",
+      "category": "door",
+      "objectName": "door_glass_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-glass-l",
+      "label": "Door Glass L",
+      "category": "door",
+      "objectName": "door_glass_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-card-stitching-l",
+      "label": "Cabin Door Card Stitching L",
+      "category": "door",
+      "objectName": "cabin_door_card_stitching_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-card-stitching-r",
+      "label": "Cabin Door Card Stitching R",
+      "category": "door",
+      "objectName": "cabin_door_card_stitching_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-upholstered-door-brow-l",
+      "label": "Cabin Upholstered Door Brow L",
+      "category": "door",
+      "objectName": "cabin_upholstered_door_brow_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-upholstered-door-brow-r",
+      "label": "Cabin Upholstered Door Brow R",
+      "category": "door",
+      "objectName": "cabin_upholstered_door_brow_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-belt-cap-r",
+      "label": "Cabin Door Belt Cap R",
+      "category": "door",
+      "objectName": "cabin_door_belt_cap_r",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-belt-cap-l",
+      "label": "Cabin Door Belt Cap L",
+      "category": "door",
+      "objectName": "cabin_door_belt_cap_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-armrest-inlay-l",
+      "label": "Cabin Door Armrest Inlay L",
+      "category": "door",
+      "objectName": "cabin_door_armrest_inlay_l",
+      "defaultVisible": true
+    },
+    {
+      "id": "cabin-door-armrest-inlay-r",
+      "label": "Cabin Door Armrest Inlay R",
+      "category": "door",
+      "objectName": "cabin_door_armrest_inlay_r",
+      "defaultVisible": true
+    }
+  ],
+  "slots": [],
+  "materialZones": [
+    {
+      "id": "body",
+      "materialName": "body",
+      "role": "primary",
+      "defaultColor": "#eb3426",
+      "meshNames": [
+        "hood",
+        "front_fender_r",
+        "front_fender_l",
+        "front_bumper",
+        "door_r",
+        "door_l",
+        "rear_quarter_r",
+        "rear_quarter_l",
+        "rocker_r",
+        "rocker_l",
+        "fixed_roof",
+        "roof_rail_r",
+        "roof_rail_l",
+        "engine_cover",
+        "rear_spoiler",
+        "rear_bumper",
+        "mirror_painted_stalk_l",
+        "mirror_painted_cap_l",
+        "mirror_painted_stalk_r",
+        "mirror_painted_cap_r"
+      ]
+    },
+    {
+      "id": "caliper",
+      "materialName": "caliper",
+      "role": "accent",
+      "defaultColor": "#242627",
+      "meshNames": [
+        "wheel_five_lugs_and_cap_fl",
+        "brake_hat_and_floating_bobbins_fl",
+        "brake_monobloc_caliper_fl",
+        "wheel_five_lugs_and_cap_fr",
+        "brake_hat_and_floating_bobbins_fr",
+        "brake_monobloc_caliper_fr",
+        "wheel_five_lugs_and_cap_rl",
+        "brake_hat_and_floating_bobbins_rl",
+        "brake_monobloc_caliper_rl",
+        "wheel_five_lugs_and_cap_rr",
+        "brake_hat_and_floating_bobbins_rr",
+        "brake_monobloc_caliper_rr"
+      ]
+    },
+    {
+      "id": "cabin-satin-alloy",
+      "materialName": "cabin_satin_alloy",
+      "role": "rim",
+      "defaultColor": "#b6babc",
+      "meshNames": [
+        "cabin_door_pull_l",
+        "cabin_door_switch_recess_l",
+        "cabin_door_pull_r",
+        "cabin_door_switch_recess_r",
+        "cabin_tachometer_digits_and_needle",
+        "cabin_centre_air_outlet_l",
+        "cabin_centre_air_outlet_r",
+        "cabin_centre_stack_aluminium_frame",
+        "cabin_navigation_screen_flanking_rails",
+        "cabin_switch_bank_fences",
+        "cabin_aircraft_toggle_1_window",
+        "cabin_aircraft_toggle_2_esc",
+        "cabin_aircraft_toggle_3_lift",
+        "cabin_aircraft_toggle_4_hazard",
+        "cabin_aircraft_toggle_5_park",
+        "cabin_aircraft_toggle_6_lock",
+        "cabin_aircraft_toggle_7_window",
+        "cabin_steering_three_spokes_and_thumb_keys"
+      ]
+    },
+    {
+      "id": "glass-edge",
+      "materialName": "glass_edge",
+      "role": "glass",
+      "defaultColor": "#1d1f22",
+      "meshNames": [
+        "side_window_dividers_r",
+        "side_window_dividers_l",
+        "headlamp_cover_r",
+        "headlamp_housing_r",
+        "headlamp_cover_l",
+        "headlamp_housing_l",
+        "mirror_aperture_and_bezel_l",
+        "mirror_aperture_and_bezel_r",
+        "windshield",
+        "front_fixed_glass_r",
+        "front_fixed_glass_l",
+        "door_glass_r",
+        "door_glass_l",
+        "rear_quarter_glass_r",
+        "rear_quarter_glass_l",
+        "rear_cabin_glass",
+        "cabin_mirror_windscreen_bond"
+      ]
+    },
+    {
+      "id": "glass",
+      "materialName": "glass",
+      "role": "glass",
+      "defaultColor": "#f7fcfc",
+      "meshNames": [
+        "windshield",
+        "front_fixed_glass_r",
+        "front_fixed_glass_l",
+        "door_glass_r",
+        "door_glass_l",
+        "rear_quarter_glass_r",
+        "rear_quarter_glass_l",
+        "rear_cabin_glass"
+      ]
+    },
+    {
+      "id": "bonnet-thermally-formed-grey-green-glass",
+      "materialName": "Bonnet | thermally formed grey-green glass",
+      "role": "glass",
+      "defaultColor": "#f5fbf8",
+      "meshNames": [
+        "engine_bonnet_glass_1",
+        "engine_bonnet_glass_2",
+        "engine_bonnet_glass_3"
+      ]
+    },
+    {
+      "id": "cabin-instrument-glass",
+      "materialName": "cabin_instrument_glass",
+      "role": "glass",
+      "defaultColor": "#fafdff",
+      "meshNames": [
+        "cabin_cluster_cover_lens",
+        "cabin_navigation_optical_cover"
+      ]
+    },
+    {
+      "id": "rubber",
+      "materialName": "rubber",
+      "role": "trim",
+      "defaultColor": "#1b1d1f",
+      "meshNames": [
+        "hood",
+        "front_fender_r",
+        "front_fender_l",
+        "front_bumper",
+        "headlamp_seat_r",
+        "headlamp_seat_l",
+        "door_r",
+        "door_l",
+        "rear_quarter_r",
+        "rear_quarter_l",
+        "side_intake_seat_r",
+        "side_intake_seat_l",
+        "rocker_r",
+        "rocker_l",
+        "fixed_roof",
+        "roof_rail_r",
+        "roof_rail_l",
+        "roof_pillar_intake_seat_r",
+        "roof_pillar_intake_seat_l",
+        "side_window_seat_r",
+        "side_window_seat_l",
+        "front_quarter_window_seat_r",
+        "front_quarter_window_seat_l",
+        "quarter_window_seat_r",
+        "quarter_window_seat_l",
+        "windshield_seat",
+        "engine_cover",
+        "rear_spoiler",
+        "rear_bumper",
+        "taillamp_seat_r",
+        "taillamp_seat_l",
+        "front_splitter_mount_r",
+        "front_splitter_mount_l",
+        "rear_display_plate_mount",
+        "centre_stop_lamp",
+        "tyre_moulded_sidewall_fl",
+        "wheel_valve_stem_fl",
+        "tyre_moulded_sidewall_fr",
+        "wheel_valve_stem_fr",
+        "tyre_moulded_sidewall_rl",
+        "wheel_valve_stem_rl",
+        "tyre_moulded_sidewall_rr",
+        "wheel_valve_stem_rr",
+        "mirror_door_gasket_l",
+        "mirror_door_gasket_r",
+        "wiper_spindle_grommet_passenger",
+        "wiper_blade_rubber_passenger",
+        "wiper_spindle_grommet_driver",
+        "wiper_blade_rubber_driver",
+        "front_fixed_glass_header_r",
+        "door_glass_header_r",
+        "quarter_glass_moulding_r",
+        "front_glass_divider_seal_r",
+        "quarter_glass_divider_seal_r",
+        "front_fixed_glass_header_l",
+        "door_glass_header_l",
+        "quarter_glass_moulding_l",
+        "front_glass_divider_seal_l",
+        "quarter_glass_divider_seal_l",
+        "rear_cabin_window_channel",
+        "cabin_rear_bulkhead_and_window_reveal"
+      ]
+    },
+    {
+      "id": "trim",
+      "materialName": "trim",
+      "role": "trim",
+      "defaultColor": "#222326",
+      "meshNames": [
+        "cowl_outlet_r",
+        "cowl_outlet_l",
+        "front_intake_seat_r",
+        "front_intake_seat_l",
+        "door_r",
+        "door_l",
+        "rear_quarter_r",
+        "rear_quarter_l",
+        "rear_arch_inlet_r",
+        "rear_arch_inlet_l",
+        "intake_blade_r",
+        "intake_blade_l",
+        "rocker_r",
+        "rocker_l",
+        "quarterlight_rear_trim_r",
+        "quarterlight_rear_trim_l",
+        "rear_spoiler",
+        "engine_bonnet_seat",
+        "rear_bumper",
+        "rear_grille_seat_r",
+        "rear_grille_seat_l",
+        "rear_diffuser_seat",
+        "headlamp_housing_r",
+        "headlamp_internal_masks_r",
+        "taillamp_reflector_cells_r",
+        "front_intake_duct_r",
+        "rear_grille_duct_r",
+        "side_intake_duct_r",
+        "side_intake_radiator_r",
+        "headlamp_housing_l",
+        "headlamp_internal_masks_l",
+        "taillamp_reflector_cells_l",
+        "front_intake_duct_l",
+        "rear_grille_duct_l",
+        "side_intake_duct_l",
+        "side_intake_radiator_l",
+        "front_center_intake_duct",
+        "front_splitter",
+        "front_splitter_mount_r",
+        "front_splitter_mount_l",
+        "front_splitter_center_blade",
+        "exhaust_surround",
+        "diffuser_vent_frame_r",
+        "diffuser_vent_frame_l",
+        "rear_diffuser_floor",
+        "rear_diffuser_seven_vanes",
+        "rear_display_plate_mount",
+        "rear_display_plate",
+        "mirror_black_undershell_l",
+        "mirror_aperture_and_bezel_l",
+        "mirror_black_undershell_r",
+        "mirror_aperture_and_bezel_r",
+        "wiper_lower_cowl_plenum",
+        "wiper_pressed_arm_passenger",
+        "wiper_aerofoil_passenger",
+        "wiper_pressed_arm_driver",
+        "wiper_aerofoil_driver",
+        "engine_bonnet_glass_support_1",
+        "engine_bonnet_glass_support_2",
+        "engine_bonnet_glass_support_3",
+        "engine_oil_filler_and_cap",
+        "cabin_seat_runners_l",
+        "cabin_seat_cushion_l",
+        "cabin_shoulder_belt_guide_l",
+        "cabin_buckle_l",
+        "cabin_seat_runners_r",
+        "cabin_seat_cushion_r",
+        "cabin_shoulder_belt_guide_r",
+        "cabin_buckle_r",
+        "cabin_outboard_driver_switch_bank",
+        "cabin_interior_rear_view_mirror",
+        "underbody_sill_closure_r",
+        "underbody_sill_closure_l",
+        "underbody_front_belly_pan",
+        "underbody_rear_cradle_pan",
+        "underbody_diffuser_feed",
+        "underbody_wheelhouse_inner_fl",
+        "underbody_wheelhouse_inner_fr",
+        "underbody_wheelhouse_inner_rl",
+        "underbody_wheelhouse_inner_rr"
+      ]
+    },
+    {
+      "id": "tyre",
+      "materialName": "tyre",
+      "role": "trim",
+      "defaultColor": "#222326",
+      "meshNames": [
+        "tyre_fl",
+        "tyre_moulded_sidewall_fl",
+        "tyre_fr",
+        "tyre_moulded_sidewall_fr",
+        "tyre_rl",
+        "tyre_moulded_sidewall_rl",
+        "tyre_rr",
+        "tyre_moulded_sidewall_rr"
+      ]
+    },
+    {
+      "id": "carbon",
+      "materialName": "carbon",
+      "role": "trim",
+      "defaultColor": "#2c2d2f",
+      "meshNames": [
+        "diffuser_vent_frame_r",
+        "diffuser_vent_frame_l",
+        "rear_diffuser_floor",
+        "rear_diffuser_seven_vanes",
+        "cabin_floor_carrier",
+        "cabin_inner_sill_l",
+        "cabin_inner_sill_r",
+        "underbody_cabin_belly"
+      ]
+    },
+    {
+      "id": "grille",
+      "materialName": "grille",
+      "role": "trim",
+      "defaultColor": "#262729",
+      "meshNames": [
+        "front_intake_honeycomb_r",
+        "front_intake_radiator_r",
+        "rear_grille_honeycomb_r",
+        "rear_grille_radiator_r",
+        "side_intake_honeycomb_r",
+        "side_intake_radiator_r",
+        "front_intake_honeycomb_l",
+        "front_intake_radiator_l",
+        "rear_grille_honeycomb_l",
+        "rear_grille_radiator_l",
+        "side_intake_honeycomb_l",
+        "side_intake_radiator_l",
+        "front_center_intake_honeycomb",
+        "front_center_intake_radiator",
+        "diffuser_vent_honeycomb_r",
+        "diffuser_vent_honeycomb_l",
+        "engine_bonnet_outlet_mesh"
+      ]
+    },
+    {
+      "id": "engine-satin-black-carbon-brace",
+      "materialName": "Engine | satin black carbon brace",
+      "role": "trim",
+      "defaultColor": "#323537",
+      "meshNames": [
+        "engine_carbon_x_and_aft_crossmember",
+        "engine_brace_anchor_castings"
+      ]
+    },
+    {
+      "id": "cabin-button-rubber",
+      "materialName": "cabin_button_rubber",
+      "role": "trim",
+      "defaultColor": "#191e1f",
+      "meshNames": [
+        "cabin_door_handle_pocket_l",
+        "cabin_door_handle_pocket_r",
+        "cabin_passenger_airbag_seam",
+        "cabin_tachometer_digits_and_needle",
+        "cabin_instrument_lens_gasket",
+        "cabin_centre_armrest_lid",
+        "cabin_navigation_screen_and_marque",
+        "cabin_aircraft_toggle_1_window",
+        "cabin_aircraft_toggle_2_esc",
+        "cabin_aircraft_toggle_3_lift",
+        "cabin_aircraft_toggle_4_hazard",
+        "cabin_aircraft_toggle_5_park",
+        "cabin_aircraft_toggle_6_lock",
+        "cabin_aircraft_toggle_7_window",
+        "cabin_climate_controls",
+        "cabin_control_island_and_fixings",
+        "cabin_drive_mode_selector",
+        "cabin_red_ignition_guard",
+        "cabin_multimedia_shortcuts_and_controller",
+        "cabin_lower_transmission_keys",
+        "cabin_steering_three_spokes_and_thumb_keys",
+        "cabin_column_stalk_l",
+        "cabin_column_stalk_r"
+      ]
+    },
+    {
+      "id": "engine-intake-rubber",
+      "materialName": "Engine | intake rubber",
+      "role": "trim",
+      "defaultColor": "#2b2e30",
+      "meshNames": [
+        "engine_intake_ducts_and_looms"
+      ]
+    },
+    {
+      "id": "lamp-white",
+      "materialName": "lamp_white",
+      "role": "headlight",
+      "defaultColor": "#eaf2ff",
+      "meshNames": [
+        "headlamp_y_guide_r",
+        "headlamp_y_guide_l"
+      ]
+    },
+    {
+      "id": "tail-red-carrier",
+      "materialName": "tail_red_carrier",
+      "role": "taillight",
+      "defaultColor": "#5d2931",
+      "meshNames": [
+        "taillamp_guide_carriers_r",
+        "taillamp_three_guides_r",
+        "taillamp_guide_carriers_l",
+        "taillamp_three_guides_l"
+      ]
+    },
+    {
+      "id": "cavity",
+      "materialName": "cavity",
+      "role": "other",
+      "defaultColor": "#121416",
+      "meshNames": [
+        "front_fender_r",
+        "front_fender_l",
+        "door_r",
+        "door_l",
+        "rear_quarter_r",
+        "rear_quarter_l",
+        "rear_arch_inlet_r",
+        "rear_arch_inlet_l",
+        "quarterlight_rear_trim_r",
+        "quarterlight_rear_trim_l",
+        "rear_diffuser_seat",
+        "headlamp_housing_r",
+        "headlamp_internal_masks_r",
+        "taillamp_housing_r",
+        "taillamp_reflector_cells_r",
+        "front_intake_radiator_r",
+        "rear_grille_radiator_r",
+        "side_intake_radiator_r",
+        "headlamp_housing_l",
+        "headlamp_internal_masks_l",
+        "taillamp_housing_l",
+        "taillamp_reflector_cells_l",
+        "front_intake_radiator_l",
+        "rear_grille_radiator_l",
+        "side_intake_radiator_l",
+        "front_center_intake_radiator",
+        "front_splitter",
+        "exhaust_surround",
+        "exhaust_polygonal_finisher",
+        "diffuser_vent_frame_r",
+        "diffuser_vent_chamber_r",
+        "diffuser_vent_frame_l",
+        "diffuser_vent_chamber_l",
+        "wheel_hub_fl",
+        "wheel_five_lugs_and_cap_fl",
+        "brake_hat_and_floating_bobbins_fl",
+        "wheel_splash_liner_fl",
+        "wheel_hub_fr",
+        "wheel_five_lugs_and_cap_fr",
+        "brake_hat_and_floating_bobbins_fr",
+        "wheel_splash_liner_fr",
+        "wheel_hub_rl",
+        "wheel_five_lugs_and_cap_rl",
+        "brake_hat_and_floating_bobbins_rl",
+        "wheel_splash_liner_rl",
+        "wheel_hub_rr",
+        "wheel_five_lugs_and_cap_rr",
+        "brake_hat_and_floating_bobbins_rr",
+        "wheel_splash_liner_rr",
+        "engine_bonnet_frame",
+        "engine_bonnet_twin_air_outlets",
+        "engine_bonnet_outlet_air_guides",
+        "engine_throttle_and_bank_fasteners",
+        "engine_brace_mount_fasteners",
+        "engine_bay_heat_shields",
+        "cabin_moulded_headlining",
+        "cabin_demister_outlets",
+        "cabin_centre_air_outlet_l",
+        "cabin_centre_air_outlet_r",
+        "cabin_outboard_driver_switch_bank",
+        "cabin_climate_controls",
+        "cabin_drive_mode_selector",
+        "cabin_steering_wrap_seams",
+        "cabin_steering_three_spokes_and_thumb_keys",
+        "underbody_cabin_belly",
+        "underbody_rear_cradle_pan",
+        "underbody_wheelhouse_inner_fl",
+        "underbody_wheelhouse_inner_fr",
+        "underbody_wheelhouse_inner_rl",
+        "underbody_wheelhouse_inner_rr"
+      ]
+    },
+    {
+      "id": "dark-metal",
+      "materialName": "dark_metal",
+      "role": "other",
+      "defaultColor": "#404245",
+      "meshNames": [
+        "rear_arch_inlet_r",
+        "rear_arch_inlet_l",
+        "quarterlight_rear_trim_r",
+        "quarterlight_rear_trim_l",
+        "engine_bonnet_seat",
+        "headlamp_projector_reflector_r",
+        "headlamp_eight_auxiliary_optics_r",
+        "taillamp_prismatic_inserts_r",
+        "front_intake_duct_r",
+        "front_intake_honeycomb_r",
+        "rear_grille_duct_r",
+        "rear_grille_honeycomb_r",
+        "side_intake_duct_r",
+        "side_intake_honeycomb_r",
+        "headlamp_projector_reflector_l",
+        "headlamp_eight_auxiliary_optics_l",
+        "taillamp_prismatic_inserts_l",
+        "front_intake_duct_l",
+        "front_intake_honeycomb_l",
+        "rear_grille_duct_l",
+        "rear_grille_honeycomb_l",
+        "side_intake_duct_l",
+        "side_intake_honeycomb_l",
+        "front_center_intake_duct",
+        "front_center_intake_honeycomb",
+        "exhaust_four_internal_outlets",
+        "exhaust_polygonal_finisher",
+        "exhaust_perforated_upper_heatshield",
+        "diffuser_vent_honeycomb_r",
+        "diffuser_vent_honeycomb_l",
+        "rear_script_mount",
+        "wheel_barrel_fl",
+        "wheel_valve_stem_fl",
+        "brake_ventilated_drilled_rotor_fl",
+        "brake_hat_and_floating_bobbins_fl",
+        "brake_monobloc_caliper_fl",
+        "wheel_barrel_fr",
+        "wheel_valve_stem_fr",
+        "brake_ventilated_drilled_rotor_fr",
+        "brake_hat_and_floating_bobbins_fr",
+        "brake_monobloc_caliper_fr",
+        "wheel_barrel_rl",
+        "wheel_valve_stem_rl",
+        "brake_ventilated_drilled_rotor_rl",
+        "brake_hat_and_floating_bobbins_rl",
+        "brake_monobloc_caliper_rl",
+        "wheel_barrel_rr",
+        "wheel_valve_stem_rr",
+        "brake_ventilated_drilled_rotor_rr",
+        "brake_hat_and_floating_bobbins_rr",
+        "brake_monobloc_caliper_rr",
+        "wiper_spindle_grommet_passenger",
+        "wiper_pierced_blade_bridge_passenger",
+        "wiper_spindle_grommet_driver",
+        "wiper_pierced_blade_bridge_driver",
+        "engine_bonnet_frame_fasteners",
+        "engine_bonnet_outlet_mesh",
+        "engine_bonnet_outlet_air_guides",
+        "engine_upper_crankcase",
+        "engine_throttle_and_bank_fasteners",
+        "engine_oil_filler_and_cap",
+        "engine_brace_mount_fasteners",
+        "engine_bay_heat_shields",
+        "cabin_seat_runners_l",
+        "cabin_shoulder_belt_guide_l",
+        "cabin_seat_runners_r",
+        "cabin_shoulder_belt_guide_r",
+        "cabin_red_ignition_guard"
+      ]
+    },
+    {
+      "id": "cabin-fascia-hide",
+      "materialName": "cabin_fascia_hide",
+      "role": "other",
+      "defaultColor": "#232426",
+      "meshNames": [
+        "cabin_inner_c_pillar_return_l",
+        "cabin_door_belt_cap_l",
+        "cabin_door_trim_l",
+        "cabin_quarter_trim_l",
+        "cabin_upholstered_door_brow_l",
+        "cabin_inner_c_pillar_return_r",
+        "cabin_door_belt_cap_r",
+        "cabin_door_trim_r",
+        "cabin_quarter_trim_r",
+        "cabin_upholstered_door_brow_r",
+        "cabin_rear_bulkhead_and_window_reveal",
+        "cabin_dash_cowl_apron",
+        "cabin_cross_car_dashboard",
+        "cabin_passenger_fascia",
+        "cabin_demister_outlets",
+        "cabin_driver_instrument_hood",
+        "cabin_centre_air_outlet_l",
+        "cabin_centre_air_outlet_r",
+        "cabin_unified_vent_brow",
+        "cabin_centre_tunnel",
+        "cabin_centre_stack_leather_housing",
+        "cabin_stack_stitched_sidewalls",
+        "cabin_lower_transmission_keys",
+        "cabin_overhead_reading_light_console"
+      ]
+    },
+    {
+      "id": "carpet",
+      "materialName": "carpet",
+      "role": "other",
+      "defaultColor": "#232222",
+      "meshNames": [
+        "cabin_floor_carrier",
+        "cabin_door_trim_l",
+        "cabin_quarter_trim_l",
+        "cabin_door_trim_r",
+        "cabin_quarter_trim_r",
+        "cabin_centre_tunnel",
+        "cabin_front_footwell_bulkhead"
+      ]
+    },
+    {
+      "id": "cabin-headcloth",
+      "materialName": "cabin_headcloth",
+      "role": "other",
+      "defaultColor": "#18191b",
+      "meshNames": [
+        "cabin_moulded_headlining",
+        "cabin_windscreen_header",
+        "cabin_rear_headlining_crossmember",
+        "cabin_inner_roof_rail_l",
+        "cabin_inner_a_pillar_l",
+        "cabin_inner_b_pillar_l",
+        "cabin_inner_roof_rail_r",
+        "cabin_inner_a_pillar_r",
+        "cabin_inner_b_pillar_r",
+        "cabin_folded_sunvisor_l",
+        "cabin_folded_sunvisor_r"
+      ]
+    },
+    {
+      "id": "cabin-nappa-black",
+      "materialName": "cabin_nappa_black",
+      "role": "other",
+      "defaultColor": "#1f2122",
+      "meshNames": [
+        "cabin_seat_sculpted_back_l",
+        "cabin_headrest_support_neck_l",
+        "cabin_integrated_head_rest_l",
+        "cabin_head_rest_side_bolsters_l",
+        "cabin_seat_cushion_l",
+        "cabin_retracted_belt_l",
+        "cabin_seat_sculpted_back_r",
+        "cabin_headrest_support_neck_r",
+        "cabin_integrated_head_rest_r",
+        "cabin_head_rest_side_bolsters_r",
+        "cabin_seat_cushion_r",
+        "cabin_retracted_belt_r"
+      ]
+    },
+    {
+      "id": "wheel",
+      "materialName": "wheel",
+      "role": "other",
+      "defaultColor": "#28292d",
+      "meshNames": [
+        "wheel_hub_fl",
+        "wheel_barrel_fl",
+        "wheel_five_split_spokes_fl",
+        "wheel_five_lugs_and_cap_fl",
+        "wheel_hub_fr",
+        "wheel_barrel_fr",
+        "wheel_five_split_spokes_fr",
+        "wheel_five_lugs_and_cap_fr",
+        "wheel_hub_rl",
+        "wheel_barrel_rl",
+        "wheel_five_split_spokes_rl",
+        "wheel_five_lugs_and_cap_rl",
+        "wheel_hub_rr",
+        "wheel_barrel_rr",
+        "wheel_five_split_spokes_rr",
+        "wheel_five_lugs_and_cap_rr"
+      ]
+    },
+    {
+      "id": "cabin-cast-softtouch",
+      "materialName": "cabin_cast_softtouch",
+      "role": "other",
+      "defaultColor": "#2a2c2d",
+      "meshNames": [
+        "cabin_door_switch_recess_l",
+        "cabin_door_switch_recess_r",
+        "cabin_cross_car_dashboard",
+        "cabin_glovebox_door_and_stitching",
+        "cabin_driver_instrument_hood",
+        "cabin_centre_air_outlet_l",
+        "cabin_centre_air_outlet_r",
+        "cabin_centre_armrest_lid",
+        "cabin_aircraft_toggle_1_window",
+        "cabin_aircraft_toggle_2_esc",
+        "cabin_aircraft_toggle_3_lift",
+        "cabin_aircraft_toggle_4_hazard",
+        "cabin_aircraft_toggle_5_park",
+        "cabin_aircraft_toggle_6_lock",
+        "cabin_aircraft_toggle_7_window",
+        "cabin_multimedia_shortcuts_and_controller",
+        "cabin_lower_transmission_keys",
+        "cabin_steering_column_shroud",
+        "cabin_steering_three_spokes_and_thumb_keys",
+        "cabin_column_stalk_l",
+        "cabin_column_stalk_r"
+      ]
+    },
+    {
+      "id": "cabin-nappa-orange",
+      "materialName": "cabin_nappa_orange",
+      "role": "other",
+      "defaultColor": "#a74830",
+      "meshNames": [
+        "cabin_door_armrest_inlay_l",
+        "cabin_seat_back_insert_l",
+        "cabin_integrated_head_rest_l",
+        "cabin_seat_cushion_l",
+        "cabin_door_armrest_inlay_r",
+        "cabin_seat_back_insert_r",
+        "cabin_integrated_head_rest_r",
+        "cabin_seat_cushion_r",
+        "cabin_tunnel_leather_inlay_l",
+        "cabin_tunnel_leather_inlay_r",
+        "cabin_centre_armrest_lid"
+      ]
+    },
+    {
+      "id": "cabin-black-thread",
+      "materialName": "cabin_black_thread",
+      "role": "other",
+      "defaultColor": "#313233",
+      "meshNames": [
+        "cabin_door_card_stitching_l",
+        "cabin_backrest_seams_l",
+        "cabin_cushion_panel_seams_l",
+        "cabin_door_card_stitching_r",
+        "cabin_backrest_seams_r",
+        "cabin_cushion_panel_seams_r",
+        "cabin_upper_dash_seams",
+        "cabin_glovebox_door_and_stitching",
+        "cabin_instrument_visor_topstitch",
+        "cabin_console_cheek_stitching"
+      ]
+    },
+    {
+      "id": "bonnet-grained-black-air-guide-composite",
+      "materialName": "Bonnet | grained black air-guide composite",
+      "role": "other",
+      "defaultColor": "#1d1f22",
+      "meshNames": [
+        "engine_bonnet_frame"
+      ]
+    },
+    {
+      "id": "cabin-orange-thread",
+      "materialName": "cabin_orange_thread",
+      "role": "other",
+      "defaultColor": "#943d26",
+      "meshNames": [
+        "cabin_door_card_stitching_l",
+        "cabin_backrest_seams_l",
+        "cabin_headrest_panel_seams_l",
+        "cabin_cushion_panel_seams_l",
+        "cabin_door_card_stitching_r",
+        "cabin_backrest_seams_r",
+        "cabin_headrest_panel_seams_r",
+        "cabin_cushion_panel_seams_r",
+        "cabin_tunnel_inlay_stitching_l",
+        "cabin_tunnel_inlay_stitching_r"
+      ]
+    },
+    {
+      "id": "badge-black",
+      "materialName": "badge_black",
+      "role": "other",
+      "defaultColor": "#1e1d1b",
+      "meshNames": [
+        "nose_shield_mount_and_enamel",
+        "nose_shield_charging_bull",
+        "wheel_five_lugs_and_cap_fl",
+        "wheel_centre_shield_fl",
+        "wheel_five_lugs_and_cap_fr",
+        "wheel_centre_shield_fr",
+        "wheel_five_lugs_and_cap_rl",
+        "wheel_centre_shield_rl",
+        "wheel_five_lugs_and_cap_rr",
+        "wheel_centre_shield_rr",
+        "engine_bonnet_frame_fasteners",
+        "engine_bonnet_glass_edge_frit_1",
+        "engine_bonnet_glass_edge_frit_2",
+        "engine_bonnet_glass_edge_frit_3",
+        "engine_v12_identification_plate",
+        "engine_induction_bands",
+        "engine_oil_filler_and_cap",
+        "engine_brace_anchor_castings",
+        "engine_bay_pushrod_springs",
+        "cabin_navigation_screen_and_marque",
+        "cabin_steering_lamborghini_shield"
+      ]
+    },
+    {
+      "id": "cabin-anodised",
+      "materialName": "cabin_anodised",
+      "role": "other",
+      "defaultColor": "#4a4c50",
+      "meshNames": [
+        "cabin_door_pull_l",
+        "cabin_door_pull_r",
+        "cabin_driver_tft_and_bezel",
+        "cabin_tachometer_digits_and_needle",
+        "cabin_centre_armrest_lid",
+        "cabin_centre_stack_leather_housing",
+        "cabin_centre_stack_aluminium_frame",
+        "cabin_navigation_screen_and_marque",
+        "cabin_switch_bank_fences",
+        "cabin_aircraft_toggle_1_window",
+        "cabin_aircraft_toggle_2_esc",
+        "cabin_aircraft_toggle_3_lift",
+        "cabin_aircraft_toggle_4_hazard",
+        "cabin_aircraft_toggle_5_park",
+        "cabin_aircraft_toggle_6_lock",
+        "cabin_aircraft_toggle_7_window",
+        "cabin_climate_controls",
+        "cabin_control_island_and_fixings",
+        "cabin_red_ignition_guard",
+        "cabin_multimedia_shortcuts_and_controller",
+        "cabin_steering_column_shroud",
+        "cabin_steering_three_spokes_and_thumb_keys",
+        "cabin_shift_paddle_down",
+        "cabin_shift_paddle_up"
+      ]
+    },
+    {
+      "id": "tail-black-edge",
+      "materialName": "tail_black_edge",
+      "role": "other",
+      "defaultColor": "#212327",
+      "meshNames": [
+        "taillamp_cover_r",
+        "taillamp_housing_r",
+        "taillamp_reflector_cells_r",
+        "taillamp_prismatic_inserts_r",
+        "taillamp_cover_l",
+        "taillamp_housing_l",
+        "taillamp_reflector_cells_l",
+        "taillamp_prismatic_inserts_l",
+        "centre_stop_lamp",
+        "centre_stop_lamp_optic"
+      ]
+    },
+    {
+      "id": "engine-machined-aluminium",
+      "materialName": "Engine | machined aluminium",
+      "role": "other",
+      "defaultColor": "#c2c8ca",
+      "meshNames": [
+        "engine_v12_identification_plate",
+        "engine_four_throttle_housings",
+        "engine_induction_bands",
+        "engine_intake_scripts_and_inlays",
+        "engine_throttle_and_bank_fasteners",
+        "engine_oil_filler_and_cap",
+        "engine_oil_lines",
+        "engine_brace_mount_fasteners",
+        "engine_bay_pushrod_dampers"
+      ]
+    },
+    {
+      "id": "tail-mask",
+      "materialName": "tail_mask",
+      "role": "other",
+      "defaultColor": "#2d2e31",
+      "meshNames": [
+        "taillamp_housing_r",
+        "taillamp_guide_carriers_r",
+        "taillamp_reflector_cells_r",
+        "taillamp_housing_l",
+        "taillamp_guide_carriers_l",
+        "taillamp_reflector_cells_l"
+      ]
+    },
+    {
+      "id": "lens",
+      "materialName": "lens",
+      "role": "other",
+      "defaultColor": "#fcfeff",
+      "meshNames": [
+        "headlamp_cover_r",
+        "headlamp_projector_glass_r",
+        "taillamp_three_guides_r",
+        "taillamp_compartment_lenses_r",
+        "headlamp_cover_l",
+        "headlamp_projector_glass_l",
+        "taillamp_three_guides_l",
+        "taillamp_compartment_lenses_l",
+        "cabin_overhead_reading_light_console"
+      ]
+    },
+    {
+      "id": "tail-ruby-reflector",
+      "materialName": "tail_ruby_reflector",
+      "role": "other",
+      "defaultColor": "#a81f27",
+      "meshNames": [
+        "taillamp_reflector_cells_r",
+        "taillamp_prismatic_inserts_r",
+        "taillamp_compartment_lenses_r",
+        "taillamp_reflector_cells_l",
+        "taillamp_prismatic_inserts_l",
+        "taillamp_compartment_lenses_l",
+        "centre_stop_lamp_optic"
+      ]
+    },
+    {
+      "id": "engine-black-aft-crossmember",
+      "materialName": "Engine | black aft crossmember",
+      "role": "other",
+      "defaultColor": "#121518",
+      "meshNames": [
+        "engine_carbon_x_and_aft_crossmember"
+      ]
+    },
+    {
+      "id": "tail-amber-reflector",
+      "materialName": "tail_amber_reflector",
+      "role": "other",
+      "defaultColor": "#99755f",
+      "meshNames": [
+        "taillamp_reflector_cells_r",
+        "taillamp_prismatic_inserts_r",
+        "taillamp_reflector_cells_l",
+        "taillamp_prismatic_inserts_l"
+      ]
+    },
+    {
+      "id": "tail-aluminium",
+      "materialName": "tail_aluminium",
+      "role": "other",
+      "defaultColor": "#aaafb5",
+      "meshNames": [
+        "taillamp_reflector_cells_r",
+        "taillamp_prismatic_inserts_r",
+        "taillamp_reflector_cells_l",
+        "taillamp_prismatic_inserts_l"
+      ]
+    },
+    {
+      "id": "cabin-diamond-cut",
+      "materialName": "cabin_diamond_cut",
+      "role": "other",
+      "defaultColor": "#d8dada",
+      "meshNames": [
+        "cabin_door_pull_l",
+        "cabin_door_pull_r",
+        "cabin_driver_tft_and_bezel",
+        "cabin_navigation_screen_flanking_rails",
+        "cabin_switch_bank_fences",
+        "cabin_aircraft_toggle_1_window",
+        "cabin_aircraft_toggle_2_esc",
+        "cabin_aircraft_toggle_3_lift",
+        "cabin_aircraft_toggle_4_hazard",
+        "cabin_aircraft_toggle_5_park",
+        "cabin_aircraft_toggle_6_lock",
+        "cabin_aircraft_toggle_7_window",
+        "cabin_control_island_and_fixings",
+        "cabin_steering_three_spokes_and_thumb_keys",
+        "cabin_shift_paddle_down",
+        "cabin_shift_paddle_up"
+      ]
+    },
+    {
+      "id": "metal",
+      "materialName": "metal",
+      "role": "other",
+      "defaultColor": "#a4a6aa",
+      "meshNames": [
+        "headlamp_projector_reflector_r",
+        "headlamp_eight_auxiliary_optics_r",
+        "headlamp_projector_reflector_l",
+        "headlamp_eight_auxiliary_optics_l",
+        "exhaust_polygonal_finisher",
+        "wheel_valve_stem_fl",
+        "brake_hat_and_floating_bobbins_fl",
+        "brake_caliper_inscription_fl",
+        "wheel_valve_stem_fr",
+        "brake_hat_and_floating_bobbins_fr",
+        "brake_caliper_inscription_fr",
+        "wheel_valve_stem_rl",
+        "brake_hat_and_floating_bobbins_rl",
+        "brake_caliper_inscription_rl",
+        "wheel_valve_stem_rr",
+        "brake_hat_and_floating_bobbins_rr",
+        "brake_caliper_inscription_rr",
+        "engine_bonnet_outlet_air_guides",
+        "cabin_overhead_reading_light_console"
+      ]
+    },
+    {
+      "id": "bright-lettering",
+      "materialName": "bright_lettering",
+      "role": "other",
+      "defaultColor": "#dddedf",
+      "meshNames": [
+        "headlamp_y_guide_r",
+        "headlamp_y_guide_l",
+        "exhaust_polygonal_finisher",
+        "rear_lamborghini_script",
+        "cabin_passenger_lamborghini_script"
+      ]
+    },
+    {
+      "id": "engine-textured-black-intake-casting",
+      "materialName": "Engine | textured black intake casting",
+      "role": "other",
+      "defaultColor": "#3f4242",
+      "meshNames": [
+        "engine_intake_plenum_l",
+        "engine_intake_plenum_r"
+      ]
+    },
+    {
+      "id": "exhaust",
+      "materialName": "exhaust",
+      "role": "other",
+      "defaultColor": "#6f6c65",
+      "meshNames": [
+        "exhaust_four_internal_outlets",
+        "exhaust_polygonal_finisher",
+        "exhaust_perforated_upper_heatshield",
+        "diffuser_vent_heatshield_r",
+        "diffuser_vent_heatshield_l"
+      ]
+    },
+    {
+      "id": "tail-cover",
+      "materialName": "tail_cover",
+      "role": "other",
+      "defaultColor": "#f5f8f9",
+      "meshNames": [
+        "taillamp_cover_r",
+        "taillamp_cover_l"
+      ]
+    },
+    {
+      "id": "cabin-wheel-smooth-hide",
+      "materialName": "cabin_wheel_smooth_hide",
+      "role": "other",
+      "defaultColor": "#292827",
+      "meshNames": [
+        "cabin_steering_wheel_leather_rim",
+        "cabin_steering_wrap_seams"
+      ]
+    },
+    {
+      "id": "disc",
+      "materialName": "disc",
+      "role": "other",
+      "defaultColor": "#64625f",
+      "meshNames": [
+        "brake_ventilated_drilled_rotor_fl",
+        "brake_ventilated_drilled_rotor_fr",
+        "brake_ventilated_drilled_rotor_rl",
+        "brake_ventilated_drilled_rotor_rr"
+      ]
+    },
+    {
+      "id": "reflector",
+      "materialName": "reflector",
+      "role": "other",
+      "defaultColor": "#e6e7e8",
+      "meshNames": [
+        "headlamp_projector_reflector_r",
+        "headlamp_eight_auxiliary_optics_r",
+        "taillamp_prismatic_inserts_r",
+        "headlamp_projector_reflector_l",
+        "headlamp_eight_auxiliary_optics_l",
+        "taillamp_prismatic_inserts_l"
+      ]
+    },
+    {
+      "id": "tail-amber-filter",
+      "materialName": "tail_amber_filter",
+      "role": "other",
+      "defaultColor": "#efdbca",
+      "meshNames": [
+        "taillamp_compartment_lenses_r",
+        "taillamp_compartment_lenses_l"
+      ]
+    },
+    {
+      "id": "tail-ruby-filter",
+      "materialName": "tail_ruby_filter",
+      "role": "other",
+      "defaultColor": "#c0242d",
+      "meshNames": [
+        "taillamp_compartment_lenses_r",
+        "taillamp_compartment_lenses_l"
+      ]
+    },
+    {
+      "id": "tail-ruby-face",
+      "materialName": "tail_ruby_face",
+      "role": "other",
+      "defaultColor": "#931e2b",
+      "meshNames": [
+        "taillamp_compartment_lenses_r",
+        "taillamp_compartment_lenses_l"
+      ]
+    },
+    {
+      "id": "tail-clear-flute",
+      "materialName": "tail_clear_flute",
+      "role": "other",
+      "defaultColor": "#e6eced",
+      "meshNames": [
+        "taillamp_compartment_lenses_r",
+        "taillamp_compartment_lenses_l"
+      ]
+    },
+    {
+      "id": "tail-inner-ruby",
+      "materialName": "tail_inner_ruby",
+      "role": "other",
+      "defaultColor": "#68121e",
+      "meshNames": [
+        "taillamp_compartment_lenses_r",
+        "taillamp_compartment_lenses_l"
+      ]
+    },
+    {
+      "id": "cabin-wheel-punched-hide",
+      "materialName": "cabin_wheel_punched_hide",
+      "role": "other",
+      "defaultColor": "#272624",
+      "meshNames": [
+        "cabin_steering_perforated_grip_inlays",
+        "cabin_steering_wrap_seams"
+      ]
+    },
+    {
+      "id": "tail-amber-shadow",
+      "materialName": "tail_amber_shadow",
+      "role": "other",
+      "defaultColor": "#4b3a31",
+      "meshNames": [
+        "taillamp_prismatic_inserts_r",
+        "taillamp_prismatic_inserts_l"
+      ]
+    },
+    {
+      "id": "tail-amber-face",
+      "materialName": "tail_amber_face",
+      "role": "other",
+      "defaultColor": "#84604b",
+      "meshNames": [
+        "taillamp_prismatic_inserts_r",
+        "taillamp_prismatic_inserts_l"
+      ]
+    },
+    {
+      "id": "tail-chrome-face",
+      "materialName": "tail_chrome_face",
+      "role": "other",
+      "defaultColor": "#8d9397",
+      "meshNames": [
+        "taillamp_prismatic_inserts_r",
+        "taillamp_prismatic_inserts_l"
+      ]
+    },
+    {
+      "id": "bonnet-moulded-aft-outlet-composite",
+      "materialName": "Bonnet | moulded aft outlet composite",
+      "role": "other",
+      "defaultColor": "#272829",
+      "meshNames": [
+        "engine_bonnet_twin_air_outlets"
+      ]
+    },
+    {
+      "id": "cabin-silk-ink",
+      "materialName": "cabin_silk_ink",
+      "role": "other",
+      "defaultColor": "#939795",
+      "meshNames": [
+        "cabin_tachometer_digits_and_needle",
+        "cabin_toggle_legends",
+        "cabin_climate_controls",
+        "cabin_drive_mode_selector",
+        "cabin_multimedia_shortcuts_and_controller",
+        "cabin_lower_transmission_keys",
+        "cabin_steering_three_spokes_and_thumb_keys",
+        "cabin_shift_paddle_down",
+        "cabin_column_stalk_l",
+        "cabin_shift_paddle_up",
+        "cabin_column_stalk_r"
+      ]
+    },
+    {
+      "id": "tail-running",
+      "materialName": "tail_running",
+      "role": "other",
+      "defaultColor": "#863b42",
+      "meshNames": [
+        "taillamp_three_guides_r",
+        "taillamp_stem_extractors_r",
+        "taillamp_three_guides_l",
+        "taillamp_stem_extractors_l"
+      ]
+    },
+    {
+      "id": "tail-extractor",
+      "materialName": "tail_extractor",
+      "role": "other",
+      "defaultColor": "#ca521f",
+      "meshNames": [
+        "taillamp_three_guides_r",
+        "taillamp_stem_extractors_r",
+        "taillamp_three_guides_l",
+        "taillamp_stem_extractors_l"
+      ]
+    },
+    {
+      "id": "bonnet-clear-resin-over-twill",
+      "materialName": "Bonnet | clear resin over twill",
+      "role": "other",
+      "defaultColor": "#3a3d3f",
+      "meshNames": [
+        "engine_v12_carbon_centre_cover"
+      ]
+    },
+    {
+      "id": "tail-prism-web",
+      "materialName": "tail_prism_web",
+      "role": "other",
+      "defaultColor": "#8e2c32",
+      "meshNames": [
+        "taillamp_three_guides_r",
+        "taillamp_three_guides_l"
+      ]
+    },
+    {
+      "id": "mirror",
+      "materialName": "mirror",
+      "role": "other",
+      "defaultColor": "#dee2e5",
+      "meshNames": [
+        "mirror_rear_facing_glass_l",
+        "mirror_rear_facing_glass_r",
+        "cabin_interior_rear_view_mirror"
+      ]
+    },
+    {
+      "id": "cabin-wheel-waxed-thread",
+      "materialName": "cabin_wheel_waxed_thread",
+      "role": "other",
+      "defaultColor": "#373534",
+      "meshNames": [
+        "cabin_steering_wrap_seams"
+      ]
+    },
+    {
+      "id": "cabin-wheel-cut-hide",
+      "materialName": "cabin_wheel_cut_hide",
+      "role": "other",
+      "defaultColor": "#040303",
+      "meshNames": [
+        "cabin_steering_perforated_grip_inlays"
+      ]
+    },
+    {
+      "id": "cabin-dark-lcd",
+      "materialName": "cabin_dark_lcd",
+      "role": "other",
+      "defaultColor": "#0d1012",
+      "meshNames": [
+        "cabin_driver_tft_and_bezel",
+        "cabin_tachometer_digits_and_needle",
+        "cabin_navigation_screen_and_marque"
+      ]
+    },
+    {
+      "id": "cabin-control-crown",
+      "materialName": "cabin_control_crown",
+      "role": "other",
+      "defaultColor": "#121618",
+      "meshNames": [
+        "cabin_climate_controls",
+        "cabin_multimedia_shortcuts_and_controller"
+      ]
+    },
+    {
+      "id": "cabin-wheel-airbag-hide",
+      "materialName": "cabin_wheel_airbag_hide",
+      "role": "other",
+      "defaultColor": "#282726",
+      "meshNames": [
+        "cabin_steering_airbag"
+      ]
+    },
+    {
+      "id": "badge-gold",
+      "materialName": "badge_gold",
+      "role": "other",
+      "defaultColor": "#dbad55",
+      "meshNames": [
+        "nose_shield_mount_and_enamel",
+        "nose_shield_charging_bull",
+        "nose_shield_lettering",
+        "wheel_centre_shield_fl",
+        "wheel_centre_shield_fr",
+        "wheel_centre_shield_rl",
+        "wheel_centre_shield_rr",
+        "cabin_navigation_screen_and_marque",
+        "cabin_steering_lamborghini_shield"
+      ]
+    },
+    {
+      "id": "tail-hot-core",
+      "materialName": "tail_hot_core",
+      "role": "other",
+      "defaultColor": "#db7c1f",
+      "meshNames": [
+        "taillamp_stem_extractors_r",
+        "taillamp_stem_extractors_l"
+      ]
+    },
+    {
+      "id": "display",
+      "materialName": "display",
+      "role": "other",
+      "defaultColor": "#e5ebec",
+      "meshNames": [
+        "cabin_tachometer_digits_and_needle"
+      ]
+    },
+    {
+      "id": "amber",
+      "materialName": "amber",
+      "role": "other",
+      "defaultColor": "#ec8624",
+      "meshNames": [
+        "cabin_tachometer_digits_and_needle"
+      ]
+    },
+    {
+      "id": "plate-cut-graphite",
+      "materialName": "plate_cut_graphite",
+      "role": "other",
+      "defaultColor": "#797c7d",
+      "meshNames": [
+        "rear_display_plate"
+      ]
+    },
+    {
+      "id": "plate-graphite",
+      "materialName": "plate_graphite",
+      "role": "other",
+      "defaultColor": "#383b3e",
+      "meshNames": [
+        "rear_display_plate"
+      ]
+    },
+    {
+      "id": "tail-smoked-stop",
+      "materialName": "tail_smoked_stop",
+      "role": "other",
+      "defaultColor": "#382a32",
+      "meshNames": [
+        "centre_stop_lamp_optic"
+      ]
+    },
+    {
+      "id": "cabin-ignition-lacquer",
+      "materialName": "cabin_ignition_lacquer",
+      "role": "other",
+      "defaultColor": "#b51614",
+      "meshNames": [
+        "cabin_toggle_legends",
+        "cabin_red_ignition_guard"
+      ]
+    },
+    {
+      "id": "plate-milled-silver",
+      "materialName": "plate_milled_silver",
+      "role": "other",
+      "defaultColor": "#dde1e3",
+      "meshNames": [
+        "rear_display_plate_letters",
+        "cabin_outboard_driver_switch_bank"
+      ]
+    },
+    {
+      "id": "red-lens",
+      "materialName": "red_lens",
+      "role": "other",
+      "defaultColor": "#bc1b22",
+      "meshNames": [
+        "cabin_buckle_l",
+        "cabin_buckle_r"
+      ]
+    },
+    {
+      "id": "plate-letter-edge",
+      "materialName": "plate_letter_edge",
+      "role": "other",
+      "defaultColor": "#aaafb5",
+      "meshNames": [
+        "rear_display_plate_letters"
+      ]
+    }
+  ],
+  "hints": [
+    "Detected car length along Blender X-axis; rotated 90\u00b0 so it parks lengthwise inside garage bays.",
+    "Capped 16 extreme Subsurf modifier(s) (> level 2) to level 2."
+  ]
+}
