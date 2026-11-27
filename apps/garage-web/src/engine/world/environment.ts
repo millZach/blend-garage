@@ -18,17 +18,18 @@ const SKY_GROUND_WARM = new THREE.Color(0x6b5d4a);
 const SKY_GROUND_ROAD = new THREE.Color(0x222428);
 const SUN_KEY_COLOR = new THREE.Color(0xffe6c2);
 
-const SKY_DOME_RADIUS = 1120;
+const SKY_DOME_RADIUS = 2250;
 /**
- * 1024x1024 shadow map over a tight 60m car-following frustum (~5.8cm/texel):
+ * 1024x1024 shadow map over a tight 64m car-following frustum (~6.25cm/texel):
  * 4x fewer shadow fragments than 2048x2048 while keeping crisp contact shadows on tires,
- * guardrails, and nearby trees.
+ * guardrails, and nearby trees across the 2400m open world.
  */
 const SHADOW_MAP_SIZE = 1024;
-const SHADOW_EXTENT = 30;
+const SHADOW_EXTENT = 32;
 const SHADOW_TEXEL_WORLD = (SHADOW_EXTENT * 2) / SHADOW_MAP_SIZE;
-const SUN_LIGHT_DISTANCE = 72;
-const FOG_DENSITY = 0.00118;
+const SUN_LIGHT_DISTANCE = 76;
+/** Gentle warm California aerial-perspective haze tuned for the 2400m ocean-to-mountain vista. */
+const FOG_DENSITY = 0.00062;
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const SUN_RIGHT = new THREE.Vector3().crossVectors(WORLD_UP, SUN_DIRECTION).normalize();
@@ -391,7 +392,7 @@ export class WorldEnvironment {
     cam.top = SHADOW_EXTENT;
     cam.bottom = -SHADOW_EXTENT;
     cam.near = 6;
-    cam.far = 165;
+    cam.far = 178;
     cam.updateProjectionMatrix();
     this.sunLight.shadow.bias = -0.00035;
     this.sunLight.shadow.normalBias = 0.032;

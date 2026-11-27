@@ -18,13 +18,15 @@ declare global {
 function Notice() {
   const engine = useEngine();
   const notice = useGarage((s) => s.notice);
+  const screen = useGarage((s) => s.screen);
   if (!notice) return null;
   return (
     <div
       role={notice.tone === 'error' ? 'alert' : 'status'}
-      className={`absolute left-1/2 top-5 z-30 flex max-w-[min(560px,80vw)] -translate-x-1/2 select-text items-start gap-3 rounded-md px-4 py-2.5 text-sm shadow-[0_12px_30px_rgb(0_0_0/0.5)] ${
-        notice.tone === 'error' ? 'bg-chest-700 text-white' : 'bg-paper text-ink'
-      }`}
+      style={screen === 'shop' ? { left: `calc((100% - ${CHEST_WIDTH}px) / 2)` } : undefined}
+      className={`absolute top-5 z-30 flex max-w-[min(460px,70vw)] -translate-x-1/2 select-text items-start gap-3 rounded-md px-4 py-2.5 text-sm shadow-[0_12px_30px_rgb(0_0_0/0.5)] ${
+        screen === 'shop' ? '' : 'left-1/2'
+      } ${notice.tone === 'error' ? 'bg-chest-700 text-white' : 'bg-paper text-ink'}`}
     >
       <span className="leading-snug">{notice.text}</span>
       <button type="button" aria-label="Dismiss" onClick={() => engine.dismissNotice()} className="-mr-1 mt-0.5 flex-none rounded opacity-70 hover:opacity-100">

@@ -45,6 +45,8 @@ export interface DriveAudioFrame {
   scrapeIntensity: number;
   /** Mechanical engine health (0..1, 1 = healthy). */
   engineHealth: number;
+  /** Optional: true when driving inside an enclosed concrete tunnel (adds real tunnel reverb). */
+  inTunnel?: boolean;
 }
 
 export interface CrashAudioEvent {
@@ -74,7 +76,7 @@ export interface AudioStateSnapshot {
 export interface EngineHarmonicLayer {
   /** Multiplier relative to primary cylinder firing frequency. */
   ratio: number;
-  /** Oscillator waveform shape. */
+  /** Oscillator waveform shape (used in non-worklet fallback). */
   waveform: OscillatorType;
   /** Base amplitude weight at idle/cruise. */
   baseGain: number;
@@ -82,6 +84,43 @@ export interface EngineHarmonicLayer {
   loadGain: number;
   /** Subtle detune in cents for organic multi-bank richness. */
   detuneCents?: number;
+}
+
+export interface EnginePhysicalParams {
+  /** Number of cylinders in the 4-stroke cycle. */
+  cylinders: number;
+  /** Exact firing angles in degrees across one 720-degree 4-stroke cycle. */
+  firingAnglesDeg: readonly number[];
+  /** Exhaust bank assignment per cylinder firing (`0` = left bank, `1` = right bank). */
+  cylinderBanks: readonly (0 | 1)[];
+  /** Combustion pressure attack sharpness (0.6 = soft warm, 1.5 = razor crisp). */
+  pulseSharpness: number;
+  /** Exhaust blowdown tail duration at idle in milliseconds (2.0..9.0 ms). */
+  pulseDecayMs: number;
+  /** Turbulent exhaust gas noise mixed into each combustion pulse (0.05..0.45). */
+  pulseTurbulence: number;
+  /** Cycle-to-cycle stochastic combustion jitter (0.02..0.16) to eliminate robotic buzz. */
+  cycleJitter: number;
+  /** Left bank primary exhaust header acoustic delay in milliseconds (0.6..2.2 ms). */
+  headerDelayLMs: number;
+  /** Right bank primary exhaust header acoustic delay in milliseconds (0.6..2.2 ms). */
+  headerDelayRMs: number;
+  /** Collector / X-pipe cross-feed between left and right banks (0..0.5). */
+  collectorCrossFeed: number;
+  /** Main tailpipe waveguide acoustic delay in milliseconds (2.4..8.5 ms). */
+  tailpipeDelayMs: number;
+  /** Open-pipe inverted pressure reflection feedback magnitude (0.25..0.64). */
+  pipeFeedback: number;
+  /** Reflection low-pass damping (0.18 = metallic bright rasp, 0.72 = warm deep rumble). */
+  pipeDamping: number;
+  /** Helmholtz muffler / exhaust cavity resonance frequency in Hz (85..260 Hz). */
+  mufflerResonanceHz: number;
+  /** Muffler cavity resonance boost (0.1..0.8). */
+  mufflerBody: number;
+  /** Open-throttle intake plenum resonance frequency in Hz (350..1600 Hz). */
+  intakeResonanceHz: number;
+  /** Subtle mechanical valvetrain / timing gear mesh level (0..0.35). */
+  crankcaseWhir: number;
 }
 
 export interface EngineAcousticProfile {
@@ -104,8 +143,10 @@ export interface EngineAcousticProfile {
   pitchScale: number;
   /** Sub-fundamental crank/exhaust weight (0.5x firing frequency). */
   subGain: number;
-  /** Main harmonic oscillator stack (4 oscillators). */
+  /** Main harmonic stack (used in non-worklet fallback synthesis). */
   harmonics: [EngineHarmonicLayer, EngineHarmonicLayer, EngineHarmonicLayer, EngineHarmonicLayer];
+  /** Physical 4-stroke crankshaft combustion & dual-bank exhaust waveguide parameters. */
+  physical: EnginePhysicalParams;
   /** Idle cam-lope AM/FM modulation depth (0..0.45). */
   idleLopeDepth: number;
   /** Idle cam-lope rate in Hz. */

@@ -3,8 +3,11 @@ import type { Vec3 } from '@blend-garage/vehicle-core';
 import { clamp, smoothstep } from '../math';
 import { MeshBatcher } from '../MeshBatcher';
 import type { WorldTextures } from './textures';
+import { shorelineXAtZ } from './water';
 
-export type SpawnName = 'start' | 'highway' | 'proving-grounds' | 'canyon';
+export type SpawnName = 'start' | 'coast' | 'highway' | 'canyon' | 'desert' | 'proving-grounds';
+
+export type WorldSurfaceKind = 'asphalt' | 'concrete' | 'gravel' | 'dirt' | 'grass';
 
 export interface WorldSpawnPose {
   name?: SpawnName;
@@ -25,6 +28,7 @@ export interface RoadSample {
   halfWidth: number;
   bankRad: number;
   roadId: string;
+  roadKind: RoadKind;
 }
 
 export interface FlatPad {
@@ -35,11 +39,14 @@ export interface FlatPad {
   maxZ: number;
   y: number;
   blendMargin: number;
+  surface: WorldSurfaceKind;
 }
+
+export type RoadKind = 'highway' | 'canyon' | 'coast' | 'dirt' | 'connector';
 
 export interface RoadDefinition {
   id: string;
-  kind: 'highway' | 'canyon' | 'connector';
+  kind: RoadKind;
   closed: boolean;
   halfWidth: number;
   samples: RoadSample[];
@@ -51,33 +58,75 @@ export interface RoadQueryResult {
   halfWidth: number;
   onRoad: boolean;
   sample: RoadSample | null;
+  pad: FlatPad | null;
 }
 
-/** Flat paved zones: Spawn Plaza & Crash-Test/Stunt Proving Grounds. */
+/** Exact drivable bounds of the 280m illuminated Concrete Mountain Tunnel on North Valley Expressway. */
+export const TUNNEL_BOUNDS = {
+  minX: -160,
+  maxX: 120,
+  centerZ: -620,
+  halfWidth: 10.5,
+  floorY: 12.0,
+  ceilingY: 20.4,
+} as const;
+
+/** Exact span of the Steel-Arch Pacific Coast Bridge over the ocean bay inlet. */
+export const COAST_BRIDGE_BOUNDS = {
+  centerX: -720,
+  minZ: -128,
+  maxZ: 128,
+  halfWidth: 7.4,
+  deckY: 14.5,
+} as const;
+
+/** Returns true if world position (x, y, z) is inside the Mountain Tunnel (drives audio reverb). */
+export function isInsideTunnelCoords(x: number, y: number, z: number): boolean {
+  return (
+    x >= TUNNEL_BOUNDS.minX &&
+    x <= TUNNEL_BOUNDS.maxX &&
+    Math.abs(z - TUNNEL_BOUNDS.centerZ) <= TUNNEL_BOUNDS.halfWidth &&
+    y >= TUNNEL_BOUNDS.floorY - 1.5 &&
+    y <= TUNNEL_BOUNDS.ceilingY + 1.0
+  );
+}
+
+/** Returns true if (x, z) lies over the open-water coastal bay spanned by the Steel-Arch Bridge. */
+export function isOnCoastBridgeSpan(x: number, z: number): boolean {
+  return (
+    Math.abs(x - COAST_BRIDGE_BOUNDS.centerX) <= COAST_BRIDGE_BOUNDS.halfWidth + 24 &&
+    z >= COAST_BRIDGE_BOUNDS.minZ + 6 &&
+    z <= COAST_BRIDGE_BOUNDS.maxZ - 6
+  );
+}
+
+/** Flat paved zones: Central Blend Garage HQ Plaza & South-West Expanded Crash Arena / Airfield Stunt Park. */
 export const FLAT_PADS: readonly FlatPad[] = [
   {
     id: 'garage-plaza',
-    minX: -54,
-    maxX: 54,
-    minZ: -52,
-    maxZ: 54,
+    minX: -64,
+    maxX: 64,
+    minZ: -60,
+    maxZ: 64,
     y: 0,
-    blendMargin: 18,
+    blendMargin: 22,
+    surface: 'asphalt',
   },
   {
     id: 'proving-grounds',
-    minX: 74,
-    maxX: 242,
-    minZ: -78,
-    maxZ: 124,
+    minX: -540,
+    maxX: -140,
+    minZ: 440,
+    maxZ: 940,
     y: 0,
-    blendMargin: 20,
+    blendMargin: 28,
+    surface: 'concrete',
   },
 ];
 
 interface RoadControlSpec {
   id: string;
-  kind: 'highway' | 'canyon' | 'connector';
+  kind: RoadKind;
   closed: boolean;
   halfWidth: number;
   spacing: number;
@@ -85,103 +134,176 @@ interface RoadControlSpec {
 }
 
 const ROAD_SPECS: readonly RoadControlSpec[] = [
-  // 1. Main 4-lane Highway Loop (~2.2 km) with dead-flat 620m South Top-Speed Straightaway at Z = +260.
+  // 1. Valley Expressway Loop (~5.2 km 4-lane circuit):
+  //    - 1.36 km dead-flat South High-Speed Straightaway along Z = +340 (X = -680 -> +680)
+  //    - Sweeping East/North curves through the 280m Illuminated Concrete Mountain Tunnel (Z = -620, X = +120 -> -160)
   {
     id: 'highway-loop',
     kind: 'highway',
     closed: true,
-    halfWidth: 8.5,
-    spacing: 3.5,
+    halfWidth: 9.0,
+    spacing: 4.5,
     points: [
-      [-310, 0, 260],
-      [-155, 0, 260],
-      [0, 0, 260],
-      [155, 0, 260],
-      [310, 0, 260],
-      [395, 0, 200],
-      [420, 1.0, 60],
-      [415, 2.5, -100],
-      [345, 3.2, -230],
-      [215, 3.8, -285],
-      [60, 4.4, -300],
-      [-100, 4.0, -290],
-      [-260, 5.2, -245],
-      [-375, 3.6, -135],
-      [-405, 1.6, 15],
-      [-385, 0.3, 165],
+      [-680, 0, 340],
+      [-340, 0, 340],
+      [0, 0, 340],
+      [340, 0, 340],
+      [680, 0, 340],
+      [855, 2.0, 225],
+      [910, 6.0, 10],
+      [865, 10.5, -245],
+      [710, 12.0, -510],
+      [440, 12.0, -610],
+      [180, 12.0, -620],
+      [120, 12.0, -620],
+      [-20, 12.0, -620],
+      [-160, 12.0, -620],
+      [-260, 12.0, -620],
+      [-520, 12.0, -565],
+      [-585, 9.5, -330],
+      [-525, 5.5, -60],
+      [-575, 2.5, 175],
     ],
   },
-  // 2. Straight Plaza-to-Highway Connector Boulevard along X = 0 (from Plaza Z = 44 to Highway Z = 264).
+
+  // 2. Pacific Coast Highway (West oceanfront scenic drive + Steel-Arch Coastal Bridge at X = -720, Z = +128 -> -128):
+  {
+    id: 'pacific-coast-hwy',
+    kind: 'coast',
+    closed: false,
+    halfWidth: 6.6,
+    spacing: 4.0,
+    points: [
+      [-680, 0, 340],
+      [-748, 4.5, 292],
+      [-734, 12.2, 212],
+      [-720, 14.5, 152],
+      [-720, 14.5, 128],
+      [-720, 14.5, 0],
+      [-720, 14.5, -128],
+      [-720, 14.5, -162],
+      [-756, 13.6, -285],
+      [-744, 12.6, -435],
+      [-665, 12.1, -535],
+      [-520, 12.0, -565],
+    ],
+  },
+
+  // 3. Plaza South Boulevard: straight from Blend Garage HQ Plaza to Valley Expressway.
   {
     id: 'plaza-highway-connector',
     kind: 'connector',
     closed: false,
-    halfWidth: 7.2,
-    spacing: 3.0,
+    halfWidth: 7.5,
+    spacing: 4.0,
     points: [
-      [0, 0, 44],
-      [0, 0, 115],
-      [0, 0, 190],
-      [0, 0, 264],
+      [0, 0, 56],
+      [0, 0, 150],
+      [0, 0, 245],
+      [0, 0, 344],
     ],
   },
-  // 3. Direct Plaza-to-Proving-Grounds Access Boulevard along Z = +20.
+
+  // 4. Expressway-to-Airfield Crash Arena Boulevard (wide 18m entry into Proving Grounds).
   {
-    id: 'plaza-proving-connector',
+    id: 'expressway-proving-connector',
     kind: 'connector',
     closed: false,
-    halfWidth: 7.5,
-    spacing: 2.5,
+    halfWidth: 8.5,
+    spacing: 3.5,
     points: [
-      [46, 0, 20],
-      [64, 0, 20],
-      [82, 0, 20],
+      [-340, 0, 336],
+      [-340, 0, 390],
+      [-340, 0, 448],
     ],
   },
-  // 4. Proving Grounds South Exit linking cleanly into Highway South Straightaway (X = 160, Z = 116 -> 264).
+
+  // 5. Plaza West Connector linking Blend Garage Plaza toward West Expressway & Pacific Coast.
   {
-    id: 'proving-highway-connector',
+    id: 'plaza-coast-connector',
+    kind: 'connector',
+    closed: false,
+    halfWidth: 6.4,
+    spacing: 4.0,
+    points: [
+      [-56, 0, 12],
+      [-215, 1.0, 55],
+      [-405, 2.2, 130],
+      [-575, 2.5, 175],
+    ],
+  },
+
+  // 6. Plaza East Connector linking Blend Garage Plaza directly to East Expressway & Desert Rally entry.
+  {
+    id: 'plaza-desert-connector',
     kind: 'connector',
     closed: false,
     halfWidth: 6.5,
-    spacing: 3.0,
+    spacing: 4.0,
     points: [
-      [160, 0, 116],
-      [160, 0, 190],
-      [160, 0, 264],
+      [56, 0, 18],
+      [215, 0, 88],
+      [365, 0, 215],
+      [440, 0, 344],
     ],
   },
-  // 5. Winding Hillside / Canyon Pass — sweeping S-curves climbing up to +15m elevation and joining the Highway Loop.
+
+  // 7. Redwood & Alpine Switchbacks (North-East Highlands: dramatic climb to +64m summit & descent to Mountain Tunnel):
   {
-    id: 'canyon-pass',
+    id: 'alpine-canyon-pass',
     kind: 'canyon',
     closed: false,
-    halfWidth: 5.8,
-    spacing: 3.0,
+    halfWidth: 6.0,
+    spacing: 3.8,
     points: [
-      [-46, 0, 8],
-      [-105, 1.2, 8],
-      [-165, 5.0, -32],
-      [-235, 10.5, -18],
-      [-290, 14.8, -78],
-      [-235, 14.0, -145],
-      [-255, 7.2, -196],
-      [-259, 5.22, -226],
-      [-260, 5.2, -246],
+      [56, 0, -24],
+      [185, 5.5, -88],
+      [335, 16.5, -162],
+      [505, 29.0, -142],
+      [555, 37.5, -225],
+      [415, 47.0, -295],
+      [585, 57.5, -365],
+      [625, 62.5, -445],
+      [495, 64.0, -490],
+      [345, 43.0, -525],
+      [255, 20.5, -562],
+      [212, 12.2, -595],
+      [182, 12.0, -616],
+      [165, 12.0, -620],
     ],
   },
-  // 6. Canyon South Spur linking the Canyon Pass down to the West Highway sweep.
+
+  // 8. Red-Rock Desert Rally Entry Spur (from Expressway Z=+340 south into the packed-dirt rally loop):
   {
-    id: 'canyon-west-spur',
-    kind: 'canyon',
+    id: 'desert-rally-entry',
+    kind: 'dirt',
     closed: false,
-    halfWidth: 5.5,
-    spacing: 3.0,
+    halfWidth: 6.8,
+    spacing: 4.0,
     points: [
-      [-235, 10.5, -18],
-      [-295, 7.0, 35],
-      [-345, 3.4, 22],
-      [-405, 1.6, 15],
+      [440, 0, 344],
+      [445, 0.4, 405],
+      [460, 0.8, 468],
+    ],
+  },
+
+  // 9. Red-Rock Mesa & Dirt Rally Loop (~2.0 km packed terracotta dirt & gravel circuit with undulating crests!):
+  {
+    id: 'desert-rally-loop',
+    kind: 'dirt',
+    closed: true,
+    halfWidth: 7.2,
+    spacing: 4.5,
+    points: [
+      [460, 0.8, 468],
+      [645, 5.2, 470],
+      [845, 9.8, 545],
+      [935, 6.2, 705],
+      [855, 11.8, 885],
+      [645, 5.5, 955],
+      [425, 8.6, 895],
+      [315, 3.8, 730],
+      [345, 1.5, 550],
     ],
   },
 ];
@@ -190,7 +312,7 @@ function sampleRoadSpline(spec: RoadControlSpec): RoadDefinition {
   const vectors = spec.points.map(([x, y, z]) => new THREE.Vector3(x, y, z));
   const curve = new THREE.CatmullRomCurve3(vectors, spec.closed, 'centripetal', 0.5);
   const length = curve.getLength();
-  const count = Math.max(12, Math.round(length / spec.spacing));
+  const count = Math.max(14, Math.round(length / spec.spacing));
 
   const rawPoints: THREE.Vector3[] = [];
   for (let i = 0; i < (spec.closed ? count : count + 1); i++) {
@@ -216,7 +338,7 @@ function sampleRoadSpline(spec: RoadControlSpec): RoadDefinition {
     const heading = Math.atan2(tx, tz);
 
     let bankRad = 0;
-    if (spec.kind === 'canyon' && i > 1 && i < n - 2) {
+    if ((spec.kind === 'canyon' || spec.kind === 'dirt') && i > 1 && i < n - 2) {
       const a = rawPoints[i - 1];
       const b = rawPoints[i + 1];
       const v1x = curr.x - a.x;
@@ -225,7 +347,7 @@ function sampleRoadSpline(spec: RoadControlSpec): RoadDefinition {
       const v2z = b.z - curr.z;
       const cross = v1x * v2z - v1z * v2x;
       const denom = (Math.hypot(v1x, v1z) * Math.hypot(v2x, v2z) + 1e-4) * spec.spacing;
-      bankRad = clamp((cross / denom) * 0.45, -0.055, 0.055);
+      bankRad = clamp((cross / denom) * 0.4, -0.05, 0.05);
     }
 
     samples.push({
@@ -238,6 +360,7 @@ function sampleRoadSpline(spec: RoadControlSpec): RoadDefinition {
       halfWidth: spec.halfWidth,
       bankRad,
       roadId: spec.id,
+      roadKind: spec.kind,
     });
   }
 
@@ -258,16 +381,16 @@ function padDistance(pad: FlatPad, x: number, z: number): number {
 }
 
 /**
- * Spatial grid accelerating road distance & elevation queries across the 1200x1200m world.
+ * Spatial grid accelerating road distance, surface, and elevation queries across the 2400x2400m world.
  */
 export class RoadNetwork {
   readonly roads: readonly RoadDefinition[];
   readonly allSamples: readonly RoadSample[];
   readonly spawnPoints: Record<SpawnName, WorldSpawnPose>;
 
-  private readonly cellSize = 24;
-  private readonly gridOrigin = -640;
-  private readonly gridDim = 54;
+  private readonly cellSize = 32;
+  private readonly gridOrigin = -1280;
+  private readonly gridDim = 80;
   private readonly buckets: RoadSample[][];
 
   constructor() {
@@ -285,33 +408,48 @@ export class RoadNetwork {
       this.buckets[gz * this.gridDim + gx].push(sample);
     }
 
-    const canyonRoad = this.roads.find((r) => r.id === 'canyon-pass')!;
-    const canyonSample = canyonRoad.samples[Math.floor(canyonRoad.samples.length * 0.25)];
+    const canyonRoad = this.roads.find((r) => r.id === 'alpine-canyon-pass')!;
+    const canyonSample = canyonRoad.samples[Math.floor(canyonRoad.samples.length * 0.24)];
+
+    const desertRoad = this.roads.find((r) => r.id === 'desert-rally-loop')!;
+    const desertSample = desertRoad.samples[Math.floor(desertRoad.samples.length * 0.03)];
 
     this.spawnPoints = {
       start: {
         name: 'start',
-        label: 'Garage Plaza',
-        position: [0, 0.04, 0],
+        label: 'Garage HQ Plaza',
+        position: [0, 0.05, 0],
         headingRad: 0,
+      },
+      coast: {
+        name: 'coast',
+        label: 'Pacific Coast Hwy',
+        position: [-720, COAST_BRIDGE_BOUNDS.deckY + 0.06, 158],
+        headingRad: Math.PI,
       },
       highway: {
         name: 'highway',
-        label: 'Highway Straight',
-        position: [-240, 0.04, 260],
-        headingRad: Math.PI / 2,
-      },
-      'proving-grounds': {
-        name: 'proving-grounds',
-        label: 'Crash Proving Grounds',
-        position: [96, 0.04, 20],
+        label: 'Valley Expressway',
+        position: [-460, 0.05, 340],
         headingRad: Math.PI / 2,
       },
       canyon: {
         name: 'canyon',
-        label: 'Canyon Pass',
-        position: [canyonSample.x, canyonSample.y + 0.04, canyonSample.z],
+        label: 'Alpine Switchbacks',
+        position: [canyonSample.x, canyonSample.y + 0.06, canyonSample.z],
         headingRad: canyonSample.heading,
+      },
+      desert: {
+        name: 'desert',
+        label: 'Red-Rock Rally',
+        position: [desertSample.x, desertSample.y + 0.06, desertSample.z],
+        headingRad: desertSample.heading,
+      },
+      'proving-grounds': {
+        name: 'proving-grounds',
+        label: 'Crash & Stunt Park',
+        position: [-468, 0.05, 620],
+        headingRad: Math.PI / 2,
       },
     };
   }
@@ -323,17 +461,19 @@ export class RoadNetwork {
     let bestY = 0;
     let bestHalfWidth = 0;
     let bestSample: RoadSample | null = null;
+    let bestPad: FlatPad | null = null;
     let onRoad = false;
 
     for (const pad of FLAT_PADS) {
       const d = padDistance(pad, x, z);
       if (d <= 0) {
-        return { distance: 0, roadY: pad.y, halfWidth: 0, onRoad: true, sample: null };
+        return { distance: 0, roadY: pad.y, halfWidth: 0, onRoad: true, sample: null, pad };
       }
       if (d < bestDist) {
         bestDist = d;
         bestY = pad.y;
         bestHalfWidth = 0;
+        bestPad = pad;
       }
     }
 
@@ -361,6 +501,7 @@ export class RoadNetwork {
             bestY = s.y;
             bestHalfWidth = s.halfWidth;
             bestSample = s;
+            bestPad = null;
             if (edgeDist === 0) onRoad = true;
           }
         }
@@ -373,25 +514,50 @@ export class RoadNetwork {
       halfWidth: bestHalfWidth,
       onRoad,
       sample: bestSample,
+      pad: bestPad,
     };
   }
 
-  /** Returns the nearest clean asphalt pose aligned with the road tangent (for Reset-to-Road). */
+  /** Classifies the driving surface at world (x, z) for dust FX & audio tire/gravel crunch. */
+  getSurfaceAt(x: number, z: number): WorldSurfaceKind {
+    if (isInsideTunnelCoords(x, TUNNEL_BOUNDS.floorY + 1, z)) return 'concrete';
+    if (
+      Math.abs(x - COAST_BRIDGE_BOUNDS.centerX) <= COAST_BRIDGE_BOUNDS.halfWidth &&
+      z >= COAST_BRIDGE_BOUNDS.minZ &&
+      z <= COAST_BRIDGE_BOUNDS.maxZ
+    ) {
+      return 'concrete';
+    }
+
+    const q = this.query(x, z);
+    if (q.onRoad) {
+      if (q.pad) return q.pad.surface;
+      if (q.sample?.roadKind === 'dirt') return 'gravel';
+      return 'asphalt';
+    }
+
+    // Off-road surface by biome.
+    if (x < shorelineXAtZ(z) + 42) return 'dirt';
+    if (x > 210 && z > 360) return 'gravel';
+    return 'grass';
+  }
+
+  /** Returns the nearest clean drivable road/pad pose aligned with the road tangent (for Reset-to-Road). */
   nearestRoadPose(x: number, z: number): WorldSpawnPose {
     for (const pad of FLAT_PADS) {
-      if (x >= pad.minX + 4 && x <= pad.maxX - 4 && z >= pad.minZ + 4 && z <= pad.maxZ - 4) {
+      if (x >= pad.minX + 6 && x <= pad.maxX - 6 && z >= pad.minZ + 6 && z <= pad.maxZ - 6) {
         if (pad.id === 'garage-plaza') {
           return {
             name: 'start',
-            label: 'Garage Plaza',
-            position: [clamp(x, -36, 36), pad.y + 0.04, clamp(z, -16, 40)],
+            label: 'Garage HQ Plaza',
+            position: [clamp(x, -42, 42), pad.y + 0.05, clamp(z, -14, 48)],
             headingRad: 0,
           };
         }
         return {
           name: 'proving-grounds',
-          label: 'Crash Proving Grounds',
-          position: [clamp(x, 86, 185), pad.y + 0.04, clamp(z, -60, 108)],
+          label: 'Crash & Stunt Park',
+          position: [clamp(x, -510, -210), pad.y + 0.05, clamp(z, 470, 900)],
           headingRad: Math.PI / 2,
         };
       }
@@ -411,15 +577,16 @@ export class RoadNetwork {
     }
 
     return {
-      position: [best.x, best.y + 0.04, best.z],
+      position: [best.x, best.y + 0.06, best.z],
       headingRad: best.heading,
     };
   }
 }
 
 /**
- * Builds a 6-vertex cross-section road ribbon with asphalt crown, weathered gravel shoulder,
+ * Builds a 6-vertex cross-section road ribbon with road crown, weathered shoulder,
  * and a softly graded earth verge dipping cleanly into the terrain so roads never look pasted on.
+ * On the Steel-Arch Coastal Bridge span, outer skirts flatten into tight bridge deck curbs.
  */
 function buildRoadRibbonGeometry(road: RoadDefinition, tileMeters: number, yOffset: number): THREE.BufferGeometry {
   const samples = road.samples;
@@ -433,7 +600,8 @@ function buildRoadRibbonGeometry(road: RoadDefinition, tileMeters: number, yOffs
 
   let distAccum = 0;
   const isHighway = road.kind === 'highway';
-  const asphaltEdgeU = isHighway ? 0.115 : 0.13;
+  const isDirt = road.kind === 'dirt';
+  const asphaltEdgeU = isHighway ? 0.115 : isDirt ? 0.14 : 0.13;
 
   for (let i = 0; i < ringCount; i++) {
     const s = samples[i % n];
@@ -442,22 +610,28 @@ function buildRoadRibbonGeometry(road: RoadDefinition, tileMeters: number, yOffs
       distAccum += Math.hypot(s.x - prev.x, s.y - prev.y, s.z - prev.z);
     }
 
-    // Left normal in horizontal plane: L = (+tz, 0, -tx) for T = (tx, 0, tz).
     const lx = s.tz;
     const lz = -s.tx;
     const hw = s.halfWidth;
-    const shW = hw + (isHighway ? 1.35 : 1.15);
-    const vergeW = shW + (isHighway ? 2.6 : 2.8);
+    const onBridge =
+      road.kind === 'coast' &&
+      Math.abs(s.x - COAST_BRIDGE_BOUNDS.centerX) < 12 &&
+      s.z >= COAST_BRIDGE_BOUNDS.minZ - 2 &&
+      s.z <= COAST_BRIDGE_BOUNDS.maxZ + 2;
+
+    const shW = onBridge ? hw + 0.55 : hw + (isHighway ? 1.4 : 1.15);
+    const vergeW = onBridge ? hw + 0.72 : shW + (isHighway ? 2.8 : 3.2);
+    const skirtDrop = onBridge ? 0.16 : 0.95;
     const y = s.y + yOffset;
     const vCoord = distAccum / tileMeters;
 
     const ringOffsets: readonly [number, number, number][] = [
-      [vergeW, y - 0.75, 0.0],
+      [vergeW, y - skirtDrop, 0.0],
       [shW, y - 0.06, asphaltEdgeU * 0.45],
       [hw, y, asphaltEdgeU],
       [-hw, y, 1 - asphaltEdgeU],
       [-shW, y - 0.06, 1 - asphaltEdgeU * 0.45],
-      [-vergeW, y - 0.75, 1.0],
+      [-vergeW, y - skirtDrop, 1.0],
     ];
 
     for (let k = 0; k < vertsPerRing; k++) {
@@ -518,7 +692,6 @@ function addCurbRun(
   const cz = (z0 + z1) * 0.5;
   const yaw = Math.atan2(x1 - x0, z1 - z0);
 
-  // Two-step chamfered curb profile (wide gutter base + tapered concrete cap).
   batcher.at(cx, 0, cz, yaw, () => {
     batcher.slab(material, 0.52, 0.08, len, 0, -0.02, 0);
     batcher.slab(material, 0.34, 0.14, len, 0, 0.06, 0);
@@ -532,8 +705,9 @@ export interface RoadVisuals {
 }
 
 /**
- * Builds all road ribbons, plaza tarmac, proving grounds concrete apron, chamfered concrete curbs,
- * weathered painted lane markings, and stenciled crash-test runway distance markers.
+ * Builds all 6-biome road ribbons (expressway, Pacific Coast, Alpine switchbacks, Red-Rock dirt rally),
+ * Blend Garage HQ plaza, Crash Arena & Airfield Stunt Park concrete apron, curbs, figure-8 drift pad
+ * rings, and stenciled crash-test runway distance markers.
  */
 export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures): RoadVisuals {
   const group = new THREE.Group();
@@ -562,6 +736,19 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     normalScale: new THREE.Vector2(0.62, 0.62),
     roughness: 1.0,
     metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+
+  const dirtMat = new THREE.MeshStandardMaterial({
+    name: 'desert-dirt-rally',
+    map: textures.dirtRoad,
+    roughnessMap: textures.dirtRough,
+    normalMap: textures.terrainNormal,
+    normalScale: new THREE.Vector2(0.75, 0.75),
+    roughness: 1.0,
+    metalness: 0.0,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -629,6 +816,7 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
   materials.push(
     highwayMat,
     canyonMat,
+    dirtMat,
     plazaMat,
     apronMat,
     curbMat,
@@ -637,22 +825,23 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     paintRedMat,
   );
 
-  // Build road ribbons. Connectors sit 1cm lower at junctions so main highway markings stay clean on top.
   for (const road of network.roads) {
     const isHighway = road.kind === 'highway';
-    const yOff = isHighway ? 0.02 : road.kind === 'connector' ? 0.006 : 0.025;
-    const tileLen = isHighway ? 24 : 18;
+    const isDirt = road.kind === 'dirt';
+    const yOff = isHighway ? 0.022 : road.kind === 'connector' ? 0.008 : 0.032;
+    const tileLen = isHighway ? 24 : isDirt ? 20 : 18;
     const geo = buildRoadRibbonGeometry(road, tileLen, yOff);
     geometries.push(geo);
 
-    const mesh = new THREE.Mesh(geo, isHighway ? highwayMat : canyonMat);
+    const mat = isHighway ? highwayMat : isDirt ? dirtMat : canyonMat;
+    const mesh = new THREE.Mesh(geo, mat);
     mesh.name = `road:${road.id}`;
     mesh.receiveShadow = true;
     mesh.matrixAutoUpdate = false;
     group.add(mesh);
   }
 
-  // Flat paved pads (Garage Plaza & Proving Grounds) with world-scaled UVs so shared textures stay 1:1.
+  // Flat paved pads (Garage Plaza & Expanded Crash Arena / Airfield Stunt Park).
   for (const pad of FLAT_PADS) {
     const w = pad.maxX - pad.minX;
     const d = pad.maxZ - pad.minZ;
@@ -660,7 +849,7 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     const cz = (pad.minZ + pad.maxZ) * 0.5;
     const geo = new THREE.PlaneGeometry(w, d);
     geo.rotateX(-Math.PI / 2);
-    const tileMeters = pad.id === 'garage-plaza' ? 10 : 12;
+    const tileMeters = pad.id === 'garage-plaza' ? 10 : 14;
     const uvAttr = geo.attributes.uv as THREE.BufferAttribute;
     for (let i = 0; i < uvAttr.count; i++) {
       uvAttr.setXY(i, uvAttr.getX(i) * (w / tileMeters), uvAttr.getY(i) * (d / tileMeters));
@@ -676,31 +865,30 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     group.add(mesh);
   }
 
-  // Chamfered weathered concrete curbs framing the Garage Plaza, Highway Approach, and Proving Grounds.
+  // Chamfered weathered concrete curbs framing the Garage Plaza, South Approach, and Airfield Stunt Park.
   const curbBatch = new MeshBatcher();
   curbBatch.useWorldUv(curbMat, 4);
 
-  // Garage Plaza south curb (leaving open 18m gateway for Highway Connector at X = -9..+9).
-  addCurbRun(curbBatch, curbMat, -53.8, 53.8, -9.2, 53.8);
-  addCurbRun(curbBatch, curbMat, 9.2, 53.8, 53.8, 53.8);
-  // Garage Plaza east curb (leaving open 20m gateway for Proving Grounds at Z = 10..30).
-  addCurbRun(curbBatch, curbMat, 53.8, -51.8, 53.8, 10.0);
-  addCurbRun(curbBatch, curbMat, 53.8, 30.0, 53.8, 53.8);
-  // Garage Plaza west curb (leaving open 16m gateway for Canyon Pass at Z = 0..16).
-  addCurbRun(curbBatch, curbMat, -53.8, -51.8, -53.8, 0.0);
-  addCurbRun(curbBatch, curbMat, -53.8, 16.0, -53.8, 53.8);
-  // Garage Plaza north curb behind HQ.
-  addCurbRun(curbBatch, curbMat, -53.8, -51.8, 53.8, -51.8);
+  // Garage Plaza perimeter curbs (leaving wide road exits open on all 4 sides).
+  addCurbRun(curbBatch, curbMat, -63.8, 63.8, -9.5, 63.8);
+  addCurbRun(curbBatch, curbMat, 9.5, 63.8, 63.8, 63.8);
+  addCurbRun(curbBatch, curbMat, 63.8, -59.8, 63.8, -34.0);
+  addCurbRun(curbBatch, curbMat, 63.8, -12.0, 63.8, 7.0);
+  addCurbRun(curbBatch, curbMat, 63.8, 29.0, 63.8, 63.8);
+  addCurbRun(curbBatch, curbMat, -63.8, -59.8, -63.8, 1.0);
+  addCurbRun(curbBatch, curbMat, -63.8, 23.0, -63.8, 63.8);
+  addCurbRun(curbBatch, curbMat, -63.8, -59.8, 63.8, -59.8);
 
-  // Plaza-to-Highway Connector boulevard curbs (X = ±7.8, Z = 54..248).
-  addCurbRun(curbBatch, curbMat, -7.8, 54.0, -7.8, 248.0);
-  addCurbRun(curbBatch, curbMat, 7.8, 54.0, 7.8, 248.0);
+  // South Plaza Boulevard curbs.
+  addCurbRun(curbBatch, curbMat, -8.2, 64.0, -8.2, 328.0);
+  addCurbRun(curbBatch, curbMat, 8.2, 64.0, 8.2, 328.0);
 
-  // Proving Grounds outer concrete curbs (open at West entry Z=10..30 and South exit X=150..170).
-  addCurbRun(curbBatch, curbMat, 74.2, -77.8, 74.2, 10.0);
-  addCurbRun(curbBatch, curbMat, 74.2, 30.0, 74.2, 123.8);
-  addCurbRun(curbBatch, curbMat, 74.2, 123.8, 151.0, 123.8);
-  addCurbRun(curbBatch, curbMat, 169.0, 123.8, 241.8, 123.8);
+  // Airfield Crash Arena north entry curbs (leaving wide entry open at X = -352..-328).
+  addCurbRun(curbBatch, curbMat, -539.8, 440.2, -352.0, 440.2);
+  addCurbRun(curbBatch, curbMat, -328.0, 440.2, -140.2, 440.2);
+  addCurbRun(curbBatch, curbMat, -539.8, 440.2, -539.8, 939.8);
+  addCurbRun(curbBatch, curbMat, -140.2, 440.2, -140.2, 939.8);
+  addCurbRun(curbBatch, curbMat, -539.8, 939.8, -140.2, 939.8);
 
   const curbGroup = curbBatch.build('road-curbs', { castShadow: false, receiveShadow: true });
   curbGroup.traverse((obj) => {
@@ -708,55 +896,78 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
   });
   group.add(curbGroup);
 
-  // Ground markings in the Garage Plaza & Crash Proving Grounds batched into 3 meshes (yellow/white/red).
+  // Ground markings across Garage Plaza & Expanded Crash Arena / Airfield Stunt Park.
   const stripeBatch = new MeshBatcher();
   const addStripe = (mat: THREE.Material, w: number, d: number, x: number, z: number, yaw = 0) => {
-    stripeBatch.decal(mat, w, d, x, 0.024, z, yaw);
+    stripeBatch.decal(mat, w, d, x, 0.025, z, yaw);
   };
 
-  // Spawn staging box outline around (0, 0, 0) + subtle corner brackets.
+  // Spawn staging box outline around (0, 0, 0).
   addStripe(paintYellowMat, 5.4, 0.24, 0, -4.5);
   addStripe(paintYellowMat, 5.4, 0.24, 0, 4.5);
   addStripe(paintYellowMat, 0.24, 9.2, -2.7, 0);
   addStripe(paintYellowMat, 0.24, 9.2, 2.7, 0);
 
-  // Parking bay lines in front of the Blend Garage HQ bays.
+  // Parking bay lines & crosswalk in front of Blend Garage HQ.
   for (let i = -3; i <= 3; i++) {
     if (i === 0) continue;
     addStripe(paintWhiteMat, 0.2, 7.8, i * 6.5, -16);
   }
-  // Yellow safety crosswalk strip across garage apron.
   for (let x = -20; x <= 20; x += 2.6) {
     addStripe(paintYellowMat, 1.3, 1.1, x, -9.2);
   }
 
-  // Impact Wall runway lane lines (Z = +20, X = 90..202) + distance ticks + red impact zone.
-  addStripe(paintYellowMat, 114, 0.34, 147, 13.5);
-  addStripe(paintYellowMat, 114, 0.34, 147, 26.5);
-  // Subtle center guide dashes down the crash test lane.
-  for (let x = 94; x <= 192; x += 8) {
-    addStripe(paintWhiteMat, 3.6, 0.18, x, 20);
+  // --- Expanded Crash Arena & Airfield Stunt Park (X: -540..-140, Z: 440..940) ---
+  // (1) High-Speed Target Crash Wall Runway (Z = 620, X = -500..-225, wall at X = -216):
+  addStripe(paintYellowMat, 280, 0.38, -360, 610);
+  addStripe(paintYellowMat, 280, 0.38, -360, 630);
+  for (let x = -492; x <= -234; x += 10) {
+    addStripe(paintWhiteMat, 4.5, 0.22, x, 620);
   }
-  // Transverse distance bars at 100m (X=106), 75m (X=131), 50m (X=156), 25m (X=181).
-  for (const x of [106, 131, 156, 181]) {
-    addStripe(paintWhiteMat, 0.9, 12.6, x, 20);
+  for (const x of [-318, -293, -268, -243]) {
+    addStripe(paintWhiteMat, 1.0, 19.2, x, 620);
   }
-  addStripe(paintRedMat, 7.2, 12.8, 200.5, 20);
+  addStripe(paintRedMat, 8.0, 19.6, -224, 620);
 
-  // Stunt Ramp approach lane (Z = -24, X = 84..195).
-  addStripe(paintWhiteMat, 110, 0.28, 139, -30.5);
-  addStripe(paintWhiteMat, 110, 0.28, 139, -17.5);
-  for (let x = 86; x <= 102; x += 5.5) {
-    addStripe(paintYellowMat, 1.4, 8.6, x, -24);
+  // (2) 3 Progressive Stunt Jump Ramp Lanes (Z = 505 Small, Z = 540 Medium, Z = 576 Mega):
+  for (const rz of [505, 540, 576]) {
+    addStripe(paintWhiteMat, 260, 0.3, -365, rz - 9.5);
+    addStripe(paintWhiteMat, 260, 0.3, -365, rz + 9.5);
+  }
+  // Launch lead-in chevrons.
+  for (let x = -445; x <= -425; x += 6) {
+    addStripe(paintYellowMat, 1.5, 11.0, x, 505);
+    addStripe(paintYellowMat, 1.5, 12.0, x, 540);
+    addStripe(paintRedMat, 1.8, 14.0, x, 576);
   }
 
-  // Slalom course lane boundaries (Z = +88, X = 88..224).
-  addStripe(paintYellowMat, 136, 0.28, 156, 76);
-  addStripe(paintYellowMat, 136, 0.28, 156, 100);
+  // (3) Figure-8 Drift Skidpad (centered around X = -340, Z = 760, twin circles at X = -402 & X = -278):
+  const driftCenters: readonly [number, number][] = [
+    [-402, 760],
+    [-278, 760],
+  ];
+  const driftR = 54;
+  const ringSteps = 36;
+  for (const [dcx, dcz] of driftCenters) {
+    for (let i = 0; i < ringSteps; i++) {
+      const a0 = (i / ringSteps) * Math.PI * 2;
+      const a1 = ((i + 1) / ringSteps) * Math.PI * 2;
+      const mx = dcx + Math.cos((a0 + a1) * 0.5) * driftR;
+      const mz = dcz + Math.sin((a0 + a1) * 0.5) * driftR;
+      const segLen = (2 * Math.PI * driftR) / ringSteps;
+      const yaw = Math.atan2(Math.cos(a1) - Math.cos(a0), Math.sin(a1) - Math.sin(a0));
+      addStripe(paintWhiteMat, 0.45, segLen * 0.92, mx, mz, yaw);
+    }
+    // Inner apex circle markings.
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      addStripe(paintYellowMat, 0.35, 4.2, dcx + Math.cos(a) * 18, dcz + Math.sin(a) * 18, a);
+    }
+  }
 
-  // Suspension rumble strip lane (Z = -56, X = 90..205).
-  addStripe(paintWhiteMat, 115, 0.26, 147.5, -62);
-  addStripe(paintWhiteMat, 115, 0.26, 147.5, -50);
+  // (4) Suspension Speed-Bump & Articulation Lane (Z = 880, X = -475..-270):
+  addStripe(paintWhiteMat, 210, 0.3, -372, 872);
+  addStripe(paintWhiteMat, 210, 0.3, -372, 888);
 
   const stripesGroup = stripeBatch.build('road-stripes', { castShadow: false, receiveShadow: true });
   stripesGroup.traverse((obj) => {
@@ -764,12 +975,12 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
   });
   group.add(stripesGroup);
 
-  // Stenciled weathered runway distance markers ("100M", "50M", "25M", "IMPACT") on the Crash Wall lane.
+  // Stenciled runway distance markers ("100M", "50M", "25M", "IMPACT") on the Target Wall lane (Z = 620).
   const runwaySpecs: readonly { tex: THREE.Texture; x: number; z: number; w: number; d: number }[] = [
-    { tex: textures.runwayDecals.mark100m, x: 111.5, z: 20, w: 6.4, d: 3.2 },
-    { tex: textures.runwayDecals.mark50m, x: 161.5, z: 20, w: 6.4, d: 3.2 },
-    { tex: textures.runwayDecals.mark25m, x: 186.5, z: 20, w: 6.4, d: 3.2 },
-    { tex: textures.runwayDecals.markImpact, x: 200.5, z: 20, w: 6.8, d: 3.4 },
+    { tex: textures.runwayDecals.mark100m, x: -312, z: 620, w: 7.4, d: 3.7 },
+    { tex: textures.runwayDecals.mark50m, x: -262, z: 620, w: 7.4, d: 3.7 },
+    { tex: textures.runwayDecals.mark25m, x: -237, z: 620, w: 7.4, d: 3.7 },
+    { tex: textures.runwayDecals.markImpact, x: -224, z: 620, w: 7.8, d: 3.9 },
   ];
   for (let i = 0; i < runwaySpecs.length; i++) {
     const r = runwaySpecs[i];
@@ -787,11 +998,10 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
     materials.push(decalMat);
     const decalGeo = new THREE.PlaneGeometry(r.w, r.d);
     decalGeo.rotateX(-Math.PI / 2);
-    // Rotate so text reads upright for a car driving eastbound (+X) toward the crash wall.
     decalGeo.rotateY(-Math.PI / 2);
     geometries.push(decalGeo);
     const mesh = new THREE.Mesh(decalGeo, decalMat);
-    mesh.position.set(r.x, 0.032, r.z);
+    mesh.position.set(r.x, 0.035, r.z);
     mesh.receiveShadow = true;
     mesh.updateMatrix();
     mesh.matrixAutoUpdate = false;
@@ -802,7 +1012,9 @@ export function buildRoadVisuals(network: RoadNetwork, textures: WorldTextures):
 }
 
 /**
- * Computes exact road/pad blend factor & target elevation for terrain sculpting.
+ * Computes exact road/pad blend factor & target elevation for 2400x2400m terrain sculpting.
+ * Skips terrain flattening across the open-water Steel-Arch Coastal Bridge span so the ocean
+ * bay flows naturally beneath the bridge deck.
  */
 export function computeRoadBlend(network: RoadNetwork, x: number, z: number): {
   flattenWeight: number;
@@ -810,22 +1022,37 @@ export function computeRoadBlend(network: RoadNetwork, x: number, z: number): {
   depressDepth: number;
   targetY: number;
 } {
+  // Keep ocean bay open under the Steel-Arch Coastal Bridge!
+  if (isOnCoastBridgeSpan(x, z)) {
+    return { flattenWeight: 0, depressWeight: 0, depressDepth: 0, targetY: 0 };
+  }
+
   const q = network.query(x, z);
   const isSplineRoad = q.sample !== null;
-  const padMargin = isSplineRoad ? 22 : 22;
-  // Keep exact road elevation well past the asphalt edge so heightfield triangles stay smooth on curved hills.
-  const flattenWeight = 1 - smoothstep(isSplineRoad ? 5.5 : 4.0, padMargin, q.distance);
 
-  // Depress visual terrain across the full road + shoulder corridor so coarse 7.5m terrain triangles
-  // bridging curved hillside bends (e.g. Canyon Pass) can never poke through the asphalt ribbon.
+  // Ensure smooth transition from terrain onto bridge abutments at Z = ±128.
+  if (
+    q.sample?.roadId === 'pacific-coast-hwy' &&
+    Math.abs(x - COAST_BRIDGE_BOUNDS.centerX) < 28 &&
+    Math.abs(z) < 126
+  ) {
+    return { flattenWeight: 0, depressWeight: 0, depressDepth: 0, targetY: 0 };
+  }
+
+  // Ensure EVERY 11.76m terrain grid vertex bordering a road sits at exact road elevation so steep
+  // +64m Alpine/Mountain slopes next to curved highways can NEVER bridge above the asphalt!
+  const padMargin = isSplineRoad ? 38 : 26;
+  const flattenInner = isSplineRoad ? 13.0 : 5.0;
+  const flattenWeight = 1 - smoothstep(flattenInner, padMargin, q.distance);
+
   const depressWeight = isSplineRoad
-    ? 1 - smoothstep(3.2, 9.2, q.distance)
+    ? 1 - smoothstep(6.5, 17.5, q.distance)
     : q.onRoad
       ? 1
-      : 1 - smoothstep(0, 1.5, q.distance);
+      : 1 - smoothstep(0, 2.0, q.distance);
 
-  // Deeper visual cut under elevated/sloped spline roads (tucked seamlessly under the -0.75m road earth verge).
-  const depressDepth = isSplineRoad && q.roadY > 0.2 ? 0.64 : 0.2;
+  // Steep alpine/highway cuts stay tucked smoothly beneath the -0.95m road earth verge.
+  const depressDepth = isSplineRoad && q.roadY > 0.25 ? 0.84 : 0.24;
 
   return { flattenWeight, depressWeight, depressDepth, targetY: q.roadY };
 }

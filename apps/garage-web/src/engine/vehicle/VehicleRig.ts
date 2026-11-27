@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { DamageStepResult, DeformableMeshPayload } from '@blend-garage/damage-bridge';
+import type { DamageStepResult, DeformableMeshPayload, MeshDamageUpdate } from '@blend-garage/damage-bridge';
 import { RIM_FINISH_PRESETS, type CarBuild, type PaintZoneRole, type PaintZoneState, type VehicleManifest } from '@blend-garage/vehicle-core';
 import { DEG, clamp } from '../math';
 import type { RigSummary, WheelCorner } from '../types';
@@ -16,8 +16,10 @@ const SUSPENSION_DROOP = 0.065;
 const FLASH_SECONDS = 0.75;
 /** Above this vertex count, avoid O(N) full-mesh normal/bounds recomputations on every impact frame. */
 const HIGH_POLY_VERTEX_THRESHOLD = 85_000;
-/** Above this vertex count, omit normal-buffer perturbation/re-upload on crash impacts to prevent 60MB GPU stalls. */
-const MEGA_POLY_NORMAL_SKIP_THRESHOLD = 250_000;
+/** Above this vertex count, rely on RealDamageSimulator's sparse normal backup instead of full restNormals copies. */
+const SPARSE_NORMAL_VERTEX_THRESHOLD = 250_000;
+/** Maximum vertex count for per-vertex paint-scuff color buffer darkening (keeps mega-poly memory flat). */
+const SCUFF_VERTEX_LIMIT = 360_000;
 
 export interface WheelDriveSpec {
   corner: WheelCorner;
@@ -36,8 +38,27 @@ export interface WheelDriveState {
   steerRad: number;
   /** Cumulative wheel spin angle in radians. */
   spinRad: number;
-  /** Optional bent-axle wobble amplitude in radians (0 = healthy). */
+  /** Instantaneous bent-axle wobble angle in radians (0 = healthy). */
   wobbleRad?: number;
+  /** Permanent structural bent camber offset in radians from corner damage. */
+  camberDamageRad?: number;
+  /** Permanent structural bent toe offset in radians from corner damage. */
+  toeDamageRad?: number;
+}
+
+export interface DetachedDebrisSpawn {
+  group: THREE.Group;
+  localPivot: THREE.Vector3;
+  radius: number;
+}
+
+interface ScuffState {
+  mesh: THREE.Mesh;
+  origMaterial: THREE.Material;
+  clonedMaterial: THREE.Material;
+  hadColorAttr: boolean;
+  restColors: Float32Array | null;
+  colorItemSize: number;
 }
 
 export interface RigResources {
@@ -116,6 +137,7 @@ export class VehicleRig {
   private readonly restPositions = new Map<string, Float32Array>();
   private readonly restNormals = new Map<string, Float32Array>();
   private readonly paddedBounds = new Set<string>();
+  private readonly scuffStates = new Map<string, ScuffState>();
   private readonly savedCastShadow = new Map<THREE.Mesh, boolean>();
   private driveShadowProxy: THREE.Group | null = null;
   private driveContactTexture: THREE.CanvasTexture | null = null;
@@ -171,10 +193,18 @@ export class VehicleRig {
     const zoneRoles: Record<string, PaintZoneRole> = {};
     const roleZones: Partial<Record<PaintZoneRole, string[]>> = {};
     const roleLeads: Partial<Record<PaintZoneRole, string>> = {};
+    const LAMP_NOT_PRIMARY = /(rear[ _-]?lamp|tail[ _-]?lamp|head[ _-]?lamp|ruby|light[ _-]?guide|emitter|optical[ _-]?cover|clear[ _-]?shell)/i;
     for (const zone of manifest.materialZones) {
       if (!booth.has(zone.id)) continue;
       const isBody = zone.id === bodyZoneId;
-      const role = isBody ? 'primary' : zone.role;
+      const mats = booth.materialsOf(zone.id);
+      const isGlass = mats.length > 0 && mats.every((m) => Boolean(m.userData.glass));
+      let role: PaintZoneRole = isBody ? 'primary' : zone.role;
+      if (!isBody && isGlass) {
+        role = 'glass';
+      } else if (!isBody && role === 'primary' && LAMP_NOT_PRIMARY.test(zone.materialName)) {
+        role = /head[ _-]?lamp/i.test(zone.materialName) ? 'headlight' : 'taillight';
+      }
       zoneRoles[zone.id] = role;
       const list = (roleZones[role] ??= []);
       // The real body paint leads the body zones, wherever the manifest happened to list it.
@@ -489,7 +519,7 @@ export class VehicleRig {
     this.shadowDirty = true;
   }
 
-  /** Syncs per-wheel suspension travel, steering, spin, and damaged-wheel wobble during Drive Mode. */
+  /** Syncs per-wheel suspension travel, steering, spin, structural camber/toe damage, and wobble during Drive Mode. */
   setWheelDriveState(states: readonly WheelDriveState[]): void {
     const camberDeg = this.applied?.stance.camberDeg ?? 0;
     const trackOffset = this.applied?.stance.trackOffset ?? 0;
@@ -498,13 +528,49 @@ export class VehicleRig {
       const wheel = this.wheelByCorner.get(state.corner);
       if (!wheel) continue;
       const wobble = state.wobbleRad ?? 0;
+      const camberDmg = state.camberDamageRad ?? 0;
+      const toeDmg = state.toeDamageRad ?? 0;
       wheel.hub.position.x = wheel.fit.center.x + wheel.fit.side * trackOffset;
       wheel.hub.position.y = state.suspensionY;
-      wheel.steer.rotation.y = (wheel.fit.front ? state.steerRad : 0) + wobble * 0.55;
-      wheel.camber.rotation.z = -wheel.fit.side * camberDeg * DEG + wobble;
+      wheel.steer.rotation.y = (wheel.fit.front ? state.steerRad : 0) + toeDmg + wobble * 0.55;
+      wheel.camber.rotation.z = -wheel.fit.side * camberDeg * DEG + camberDmg + wobble;
       wheel.spin.rotation.x = state.spinRad;
     }
     this.shadowDirty = true;
+  }
+
+  /**
+   * Clones the meshes of a newly detached car part into an independent world-tumble `THREE.Group`
+   * centered around its own bounding-box pivot. Caller owns and disposes the cloned geometries.
+   */
+  createDetachedDebrisGroup(meshIds: readonly string[], logicalPartId: string): DetachedDebrisSpawn | null {
+    const idSet = new Set(meshIds);
+    const matches = this.deformables.filter((d) => idSet.has(d.id) || (logicalPartId !== 'body' && d.partId === logicalPartId));
+    if (matches.length === 0) return null;
+
+    const combinedBox = new THREE.Box3();
+    for (const { mesh } of matches) {
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+      if (mesh.geometry.boundingBox) combinedBox.union(mesh.geometry.boundingBox);
+    }
+    if (combinedBox.isEmpty()) return null;
+
+    const localPivot = combinedBox.getCenter(new THREE.Vector3());
+    const size = combinedBox.getSize(new THREE.Vector3());
+    const radius = clamp(size.length() * 0.32, 0.14, 0.85);
+
+    const group = new THREE.Group();
+    group.name = `debris:${logicalPartId}`;
+    for (const { mesh } of matches) {
+      const geo = mesh.geometry.clone();
+      geo.translate(-localPivot.x, -localPivot.y, -localPivot.z);
+      const clone = new THREE.Mesh(geo, mesh.material);
+      clone.castShadow = false;
+      clone.receiveShadow = true;
+      group.add(clone);
+    }
+
+    return { group, localPivot, radius };
   }
 
   /**
@@ -549,8 +615,10 @@ export class VehicleRig {
     this.syncLampVisibility();
   }
 
-  /** Restores all deformed meshes, detached panels, and broken lamps back to 100% mint condition. */
+  /** Restores all deformed meshes, scuffed paint/vertex colors, detached panels, and broken lamps to 100% mint condition. */
   resetAllDamage(): void {
+    this.clearScuffStates();
+
     for (const { id, mesh } of this.deformables) {
       const restPos = this.restPositions.get(id);
       if (restPos) {
@@ -558,6 +626,7 @@ export class VehicleRig {
         const posArr = posAttr.array as Float32Array;
         if (posArr.length === restPos.length) {
           posArr.set(restPos);
+          posAttr.clearUpdateRanges();
           posAttr.needsUpdate = true;
         }
       }
@@ -567,6 +636,7 @@ export class VehicleRig {
         const normArr = normAttr.array as Float32Array;
         if (normArr.length === restNorm.length) {
           normArr.set(restNorm);
+          normAttr.clearUpdateRanges();
           normAttr.needsUpdate = true;
         }
       }
@@ -590,6 +660,99 @@ export class VehicleRig {
     this.taillightsIntact = true;
     this.syncLampVisibility();
     this.shadowDirty = true;
+  }
+
+  private clearScuffStates(): void {
+    for (const state of this.scuffStates.values()) {
+      state.mesh.material = state.origMaterial;
+      state.clonedMaterial.dispose();
+      if (state.hadColorAttr && state.restColors) {
+        const attr = state.mesh.geometry.attributes.color as THREE.BufferAttribute | undefined;
+        if (attr && (attr.array as Float32Array).length === state.restColors.length) {
+          (attr.array as Float32Array).set(state.restColors);
+          attr.clearUpdateRanges();
+          attr.needsUpdate = true;
+        }
+      } else if (!state.hadColorAttr) {
+        state.mesh.geometry.deleteAttribute('color');
+      }
+    }
+    this.scuffStates.clear();
+  }
+
+  /** Lazily darkens/scuffs scratched paint & exposed primer along crumpled vertices without mutating shared stock materials. */
+  private applyMeshScuff(id: string, mesh: THREE.Mesh, update: MeshDamageUpdate): void {
+    const posAttr = mesh.geometry.attributes.position as THREE.BufferAttribute;
+    if (posAttr.count > SCUFF_VERTEX_LIMIT || update.mutatedCount <= 0) return;
+    const mat = mesh.material as THREE.Material;
+    if (mat.transparent || mat.userData?.glass) return;
+
+    let state = this.scuffStates.get(id);
+    if (!state) {
+      const existingColor = mesh.geometry.attributes.color as THREE.BufferAttribute | undefined;
+      const hadColorAttr = Boolean(existingColor);
+      let colorAttr: THREE.BufferAttribute;
+      let restColors: Float32Array | null = null;
+      let colorItemSize = 3;
+
+      if (existingColor && existingColor.array instanceof Float32Array) {
+        colorItemSize = existingColor.itemSize;
+        restColors = existingColor.array.slice();
+        colorAttr = existingColor;
+      } else {
+        const buf = new Float32Array(posAttr.count * 3);
+        buf.fill(1);
+        colorAttr = new THREE.BufferAttribute(buf, 3);
+        mesh.geometry.setAttribute('color', colorAttr);
+      }
+
+      const cloned = mat.clone() as THREE.MeshStandardMaterial;
+      cloned.vertexColors = true;
+      cloned.needsUpdate = true;
+      mesh.material = cloned;
+
+      state = {
+        mesh,
+        origMaterial: mat,
+        clonedMaterial: cloned,
+        hadColorAttr,
+        restColors,
+        colorItemSize,
+      };
+      this.scuffStates.set(id, state);
+    }
+
+    const colorAttr = mesh.geometry.attributes.color as THREE.BufferAttribute | undefined;
+    if (!colorAttr || !(colorAttr.array instanceof Float32Array)) return;
+    const colors = colorAttr.array;
+    const stride = state.colorItemSize;
+    const rest = state.restColors;
+    const intensity = update.damageIntensity;
+    const minV = Math.max(0, update.dirtyVertexMin);
+    const maxV = Math.min(posAttr.count - 1, update.dirtyVertexMax);
+    if (maxV < minV) return;
+
+    // Exposed dark primer / scuffed steel tint for crumpled creases
+    const primerR = 0.24;
+    const primerG = 0.23;
+    const primerB = 0.22;
+    for (let v = minV; v <= maxV; v++) {
+      const d = intensity[v];
+      if (d <= 0.005) continue;
+      const blend = Math.min(0.76, d * 0.82);
+      const inv = 1 - blend;
+      const o = v * stride;
+      const r0 = rest ? rest[o] : 1;
+      const g0 = rest ? rest[o + 1] : 1;
+      const b0 = rest ? rest[o + 2] : 1;
+      colors[o] = r0 * inv + primerR * blend;
+      colors[o + 1] = g0 * inv + primerG * blend;
+      colors[o + 2] = b0 * inv + primerB * blend;
+    }
+
+    colorAttr.clearUpdateRanges();
+    colorAttr.addUpdateRange(minV * stride, (maxV - minV + 1) * stride);
+    colorAttr.needsUpdate = true;
   }
 
   /** Exits Drive Mode cleanly: repairs damage and restores shop root transform, stance, and lights. */
@@ -715,9 +878,8 @@ export class VehicleRig {
   // ---------------------------------------------------------------- Phase 2: damage simulation bridge
 
   /**
-   * Hands the body and panel vertex buffers to a `DamageSimulator` (see `@blend-garage/damage-bridge`).
-   * `positions` is the live buffer the renderer draws from: the simulator deforms it in place and the
-   * result is shown after `applyDamageResult`. Coordinates are meters in the car frame.
+   * Hands the body and panel vertex buffers (plus triangle indices & normals for exact O(k) creased
+   * normals) to a `DamageSimulator` (see `@blend-garage/damage-bridge`).
    */
   extractDeformableMeshes(): DeformableMeshPayload[] {
     const cabinMinX = -this.size.x * 0.34;
@@ -752,37 +914,63 @@ export class VehicleRig {
         this.restPositions.set(id, restPositions);
       }
 
-      // Skip normal mutation/re-upload on mega-poly (>250k vert) meshes to keep crash frames smooth.
-      let normals: Float32Array | undefined;
-      if (posAttr.count <= MEGA_POLY_NORMAL_SKIP_THRESHOLD) {
-        const normalAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
-        normals = normalAttr ? (normalAttr.array as Float32Array) : undefined;
-        if (normals && !this.restNormals.has(id)) {
-          this.restNormals.set(id, normals.slice());
-        }
+      const normalAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
+      const normals = normalAttr ? (normalAttr.array as Float32Array) : undefined;
+      // Above 250k verts, RealDamageSimulator maintains a zero-GC sparse normal backup and restores it on reset().
+      if (normals && posAttr.count <= SPARSE_NORMAL_VERTEX_THRESHOLD && !this.restNormals.has(id)) {
+        this.restNormals.set(id, normals.slice());
       }
-      payloads.push({ partId: id, restPositions, positions, normals });
+
+      const idxAttr = mesh.geometry.index;
+      const indices =
+        idxAttr && (idxAttr.array instanceof Uint16Array || idxAttr.array instanceof Uint32Array)
+          ? idxAttr.array
+          : undefined;
+
+      payloads.push({ partId: id, restPositions, positions, normals, indices });
     }
     return payloads;
   }
 
-  /** Shows what a simulator step changed: re-uploads deformed meshes and removes detached panels. */
+  /** Shows what a simulator step changed: sub-range GPU uploads for deformed positions/normals, scuff darkening, and panel detachment. */
   applyDamageResult(result: DamageStepResult): void {
     const dirty = new Set(result.dirtyPartIds);
     const detached = new Set(result.detachedPartIds);
+    const updatesById = result.meshUpdates
+      ? new Map(result.meshUpdates.map((u) => [u.partId, u]))
+      : null;
+
     for (const { id, mesh, partId } of this.deformables) {
       if (dirty.has(id)) {
         const posAttr = mesh.geometry.attributes.position as THREE.BufferAttribute;
+        const update = updatesById?.get(id);
+        const hasSubRange =
+          update !== undefined &&
+          update.mutatedCount > 0 &&
+          update.dirtyVertexMax >= update.dirtyVertexMin &&
+          update.dirtyVertexMax < posAttr.count;
+
+        posAttr.clearUpdateRanges();
+        if (hasSubRange) {
+          posAttr.addUpdateRange(update.dirtyVertexMin * 3, (update.dirtyVertexMax - update.dirtyVertexMin + 1) * 3);
+        }
         posAttr.needsUpdate = true;
+
         const normalAttr = mesh.geometry.attributes.normal as THREE.BufferAttribute | undefined;
         if (normalAttr) {
-          if (posAttr.count <= MEGA_POLY_NORMAL_SKIP_THRESHOLD) {
-            // RealDamageSimulator perturbs/restores normals in-place in O(k); just re-upload to GPU.
-            normalAttr.needsUpdate = true;
+          normalAttr.clearUpdateRanges();
+          if (hasSubRange) {
+            normalAttr.addUpdateRange(update.dirtyVertexMin * 3, (update.dirtyVertexMax - update.dirtyVertexMin + 1) * 3);
           }
+          normalAttr.needsUpdate = true;
         } else if (posAttr.count <= HIGH_POLY_VERTEX_THRESHOLD) {
           mesh.geometry.computeVertexNormals();
         }
+
+        if (update && update.mutatedCount > 0) {
+          this.applyMeshScuff(id, mesh, update);
+        }
+
         if (posAttr.count <= HIGH_POLY_VERTEX_THRESHOLD) {
           mesh.geometry.computeBoundingBox();
           mesh.geometry.computeBoundingSphere();
@@ -805,6 +993,7 @@ export class VehicleRig {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearScuffStates();
     this.lights.dispose();
     for (const key of Object.keys(this.aero) as (keyof VehicleRig['aero'])[]) disposeGroup(this.aero[key]);
     for (const wheel of this.wheels) disposeGroup(wheel.face);

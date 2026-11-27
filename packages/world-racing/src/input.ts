@@ -38,6 +38,7 @@ const DEFAULT_ACTIONS: DriveInputActions = {
   toggleHeadlights: false,
   exitDrive: false,
   toggleTransmission: false,
+  toggleInspect: false,
 };
 
 /**
@@ -185,6 +186,7 @@ export class DriveInputController {
     this.pendingActions.toggleHeadlights = false;
     this.pendingActions.exitDrive = false;
     this.pendingActions.toggleTransmission = false;
+    this.pendingActions.toggleInspect = false;
 
     let shift: -1 | 0 | 1 = this.pendingShift;
     this.pendingShift = 0;
@@ -223,6 +225,8 @@ export class DriveInputController {
     let gpSteer = 0;
     let gpHandbrake = false;
     let gpHorn = false;
+    let cameraOrbitX = 0;
+    let cameraOrbitY = 0;
 
     const pad = this.findActiveGamepad();
     if (pad) {
@@ -231,6 +235,10 @@ export class DriveInputController {
 
       const rawAxisX = pad.axes[0] ?? 0;
       gpSteer = shapeStickAxis(rawAxisX, this.stickDeadzone, this.steerExponent);
+
+      // Right stick (axes[2], axes[3]) -> smooth camera orbit
+      cameraOrbitX = shapeStickAxis(pad.axes[2] ?? 0, this.stickDeadzone, 1.35);
+      cameraOrbitY = shapeStickAxis(pad.axes[3] ?? 0, this.stickDeadzone, 1.35);
 
       // RT/R2 = button 7, LT/L2 = button 6
       gpThrottle = shapeTrigger(pad.buttons[7]?.value ?? (pad.buttons[7]?.pressed ? 1 : 0), this.triggerDeadzone);
@@ -253,7 +261,8 @@ export class DriveInputController {
       if (justPressed(5)) shift = 1; // RB / R1 shift up
       if (justPressed(8)) actions.repair = true; // Back / Select / Share
       if (justPressed(9)) actions.exitDrive = true; // Start / Options
-      if (justPressed(10) || justPressed(12)) actions.reset = true; // L3 or D-Pad Up -> Reset to Road
+      if (justPressed(10)) actions.toggleInspect = true; // L3 -> Toggle Inspect / Pan Damage camera
+      if (justPressed(12)) actions.reset = true; // D-Pad Up -> Reset to Road
       if (justPressed(13) || justPressed(15)) actions.toggleHeadlights = true; // D-Pad Down/Right
       if (justPressed(14)) actions.toggleTransmission = true; // D-Pad Left
 
@@ -266,7 +275,14 @@ export class DriveInputController {
       }
       this.prevGamepadButtons = nextPrev;
 
-      if (gpThrottle > 0 || gpBrake > 0 || Math.abs(gpSteer) > 0 || anyGpButton) {
+      if (
+        gpThrottle > 0
+        || gpBrake > 0
+        || Math.abs(gpSteer) > 0
+        || Math.abs(cameraOrbitX) > 0
+        || Math.abs(cameraOrbitY) > 0
+        || anyGpButton
+      ) {
         this.activeSource = 'gamepad';
       }
     } else {
@@ -294,6 +310,8 @@ export class DriveInputController {
     return {
       control,
       actions,
+      cameraOrbitX,
+      cameraOrbitY,
       activeSource: this.activeSource,
       gamepadName: this.gamepadName,
       gamepadConnected: this.gamepadConnected,
@@ -337,6 +355,9 @@ export class DriveInputController {
         break;
       case 'KeyM':
         this.pendingActions.toggleTransmission = true;
+        break;
+      case 'KeyV':
+        this.pendingActions.toggleInspect = true;
         break;
       case 'KeyE':
       case 'ShiftLeft':

@@ -5,7 +5,7 @@ import type { AudioStateSnapshot } from './audio';
 /** The three screens of the app: browsing cars in the photo bay, working on one in the shop, or driving in the open world. */
 export type Screen = 'selector' | 'shop' | 'drive';
 
-export type DriveCameraView = 'chase' | 'chase-far' | 'hood' | 'bumper' | 'orbit';
+export type DriveCameraView = 'chase' | 'chase-far' | 'hood' | 'bumper' | 'orbit' | 'inspect';
 
 export const DRIVE_CAMERA_VIEWS: { id: DriveCameraView; label: string }[] = [
   { id: 'chase', label: 'Chase' },
@@ -13,6 +13,7 @@ export const DRIVE_CAMERA_VIEWS: { id: DriveCameraView; label: string }[] = [
   { id: 'hood', label: 'Hood' },
   { id: 'bumper', label: 'Bumper' },
   { id: 'orbit', label: 'Orbit' },
+  { id: 'inspect', label: 'Inspect' },
 ];
 
 export type DriveInputSource = 'keyboard' | 'gamepad';
@@ -38,6 +39,7 @@ export interface DriveSnapshot {
   lightsOn: boolean;
   turboBoost: number;
   hornActive: boolean;
+  inTunnel: boolean;
 }
 
 export type CameraMode = 'orbit' | 'walk' | 'fly';

@@ -128,9 +128,21 @@ function fixMaterial(material: THREE.Material, zone: { role: PaintZoneRole; defa
   const transmission = material.transmission;
   const glazing = role === 'glass' || GLASS_WORDS.test(name);
   const whiteGlow = !material.emissiveMap && material.emissive.r > 0.95 && material.emissive.g > 0.95 && material.emissive.b > 0.95;
+  // Unexportable Blender Glass+Glossy mix shaders export as black baseColor + neutral emissive (0.2..1.0).
+  const neutralGlassGlow =
+    !material.map &&
+    !material.emissiveMap &&
+    material.color.r < 0.02 &&
+    material.color.g < 0.02 &&
+    material.color.b < 0.02 &&
+    material.emissive.r > 0.2 &&
+    material.emissive.g > 0.2 &&
+    material.emissive.b > 0.2 &&
+    saturation(material.emissive) < 0.08;
   const explicitWindowPane = /(windscreen|windshield|window|backlight|\bpane(?:[_ -]?(?:ws|side|qtr|ec|rear|front|roof))?\b|soft-ray|solar.*glass|laminated.*glass|smoked.*glass|hatch glass|drop glass|quarter glass|optical stack)/.test(name);
-  const looksClear = exportedBlank || transmission > 0 || whiteGlow || explicitWindowPane || luminance(material.color) > 0.5 || material.roughness < 0.2;
-  const solid = NOT_GLASS.test(name) && transmission < 0.35 && !whiteGlow && !/optical stack/.test(name);
+  const coloredLens = LENS_WORDS.test(name) && saturation(material.color) > 0.3 && !/chrome|shoulder|cut ends|prism|satin|plated/.test(name);
+  const looksClear = exportedBlank || transmission > 0 || whiteGlow || neutralGlassGlow || explicitWindowPane || coloredLens || luminance(material.color) > 0.5 || material.roughness < 0.2;
+  const solid = NOT_GLASS.test(name) && transmission < 0.35 && !whiteGlow && !neutralGlassGlow && !/optical stack/.test(name);
   const mirror = /mirror/.test(name) && glazing;
 
   if (solid && exportedBlank && DARK_SOLID_WORDS.test(name)) {
@@ -144,7 +156,7 @@ function fixMaterial(material: THREE.Material, zone: { role: PaintZoneRole; defa
     material.roughness = 0.04;
     material.color.set(0xdfe5ea);
     material.emissive.set(0x000000);
-  } else if (!material.map && !solid && (transmission > 0.35 || ((glazing || LENS_WORDS.test(name)) && looksClear))) {
+  } else if (!material.map && !solid && (transmission > 0.35 || neutralGlassGlow || ((glazing || LENS_WORDS.test(name)) && looksClear))) {
     const colored = saturation(material.color) > 0.3;
     if (colored) {
       // Red and amber lamp lenses keep their color.
@@ -165,7 +177,7 @@ function fixMaterial(material: THREE.Material, zone: { role: PaintZoneRole; defa
     material.clearcoat = 1;
     material.clearcoatRoughness = 0.03;
     material.envMapIntensity = 1.35;
-    if (whiteGlow || !colored) material.emissive.set(0x000000);
+    if (whiteGlow || neutralGlassGlow || !colored) material.emissive.set(0x000000);
     material.userData.glass = true;
   }
   // No material keeps real transmission: it would add a second full render of the car every frame.

@@ -4,7 +4,7 @@
   "name": "Porsche 911 Gt3rs Astra White",
   "author": "Garage Builder",
   "sourceFile": "porsche-911-gt3rs-astra-white.blend",
-  "importedAt": "2026-11-27T01:59:17.513915+00:00",
+  "importedAt": "2026-11-27T04:34:24.571019+00:00",
   "modelUrl": "/cars/porsche-911-gt3rs-astra-white/model.glb",
   "bounds": {
     "min": [
@@ -937,7 +937,7 @@
       "id": "cockpit-satin-2x2-carbon-twill",
       "materialName": "Cockpit | satin 2x2 carbon twill",
       "role": "trim",
-      "defaultColor": "#e7e7e7",
+      "defaultColor": "#303336",
       "meshNames": [
         "One-piece carbon racing bucket with five rolled harness slots",
         "Composite shoulder keeper reinforced cantilever",
@@ -1529,7 +1529,7 @@
       "id": "doors-clear-coated-carbon-sill",
       "materialName": "Doors | clear-coated carbon sill",
       "role": "trim",
-      "defaultColor": "#e7e7e7",
+      "defaultColor": "#303336",
       "meshNames": [
         "Exposed carbon inner sill cap",
         "Exposed carbon inner sill cap.001"
@@ -1722,7 +1722,7 @@
       "id": "rear-compartment-graphite-wool-pile",
       "materialName": "Rear compartment | graphite wool pile",
       "role": "other",
-      "defaultColor": "#bdbfc4",
+      "defaultColor": "#353639",
       "meshNames": [
         "Contoured rear cargo carpet and inclined heelboard",
         "Rounded luggage bay wheelhouse lining",
@@ -1751,7 +1751,7 @@
       "id": "headliner-anthracite",
       "materialName": "Headliner | anthracite",
       "role": "other",
-      "defaultColor": "#bdbfc4",
+      "defaultColor": "#1d1e21",
       "meshNames": [
         "Folded visor with stitched bound edge",
         "Folded visor with stitched bound edge.001",
@@ -1835,7 +1835,7 @@
       "id": "tub-anthracite-tufted-carpet",
       "materialName": "Tub | anthracite tufted carpet",
       "role": "other",
-      "defaultColor": "#bdbfc4",
+      "defaultColor": "#2b2c2e",
       "meshNames": [
         "Moulded carpet footwell and rear wheelhouse rise",
         "Footwell carpet overmat",
@@ -4754,7 +4754,7 @@
       "id": "tub-carpet-bound-edge",
       "materialName": "Tub | carpet bound edge",
       "role": "other",
-      "defaultColor": "#bdbfc4",
+      "defaultColor": "#1d1e22",
       "meshNames": [
         "Embossed driver heel pad",
         "Overmat folded textile binding",
@@ -4891,7 +4891,7 @@
       "id": "doors-black-punched-race-tex",
       "materialName": "Doors | black punched Race-Tex",
       "role": "other",
-      "defaultColor": "#e7e7e7",
+      "defaultColor": "#2a2b2f",
       "meshNames": [
         "R15 door recessed perforated black insert | driver",
         "R15 door recessed perforated black insert | passenger"
@@ -4901,7 +4901,7 @@
       "id": "doors-recessed-garnet-textile",
       "materialName": "Doors | recessed garnet textile",
       "role": "other",
-      "defaultColor": "#e7e7e7",
+      "defaultColor": "#6a0d16",
       "meshNames": [
         "R15 door red woven insert backing | driver",
         "R15 door red woven insert backing | passenger"
@@ -6246,6 +6246,7 @@
     }
   ],
   "hints": [
+    "Projected Object-space side decal 'side_graphic.png' on 'Paint | deep gloss black clearcoat' into a glTF-native UV texture.",
     "Detected car length along Blender X-axis; rotated 90\u00b0 so it parks lengthwise inside garage bays."
   ]
 }

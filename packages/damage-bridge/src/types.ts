@@ -12,6 +12,13 @@ export interface DeformableMeshPayload {
   positions: Float32Array;
   /** Optional vertex normals; locally updated on impact when provided, or recomputed by the renderer if omitted. */
   normals?: Float32Array;
+  /** Optional triangle index buffer for exact O(k) local creased face-normal recomputation. */
+  indices?: Uint16Array | Uint32Array;
+  /**
+   * Optional per-vertex paint scuff / crease intensity mask (length = vertexCount, values 0..1).
+   * If omitted, `RealDamageSimulator` lazily allocates one on first hit and returns it in `meshUpdates`.
+   */
+  damageIntensity?: Float32Array;
 }
 
 export interface DamageInitConfig {
@@ -33,6 +40,20 @@ export interface ImpactEvent {
   partId?: string;
 }
 
+/** Structural wheel/axle deformation state for one corner (FL, FR, RL, RR). */
+export interface WheelDamageState {
+  /** Remaining structural integrity (0..1, 1 = intact). */
+  integrity: number;
+  /** Permanent bent camber angle in radians. */
+  camberRad: number;
+  /** Permanent bent toe angle in radians. */
+  toeRad: number;
+  /** Rotational rim/hub wobble amplitude in radians. */
+  wobbleRad: number;
+  /** Normalized suspension strut collapse fraction (0 = intact, 1 = fully collapsed). */
+  collapsed: number;
+}
+
 export interface MechanicalHealth {
   chassisIntegrity: number; // 0..1
   engineHealth: number; // 0..1
@@ -40,11 +61,13 @@ export interface MechanicalHealth {
   wheelIntegrity: [number, number, number, number]; // FL, FR, RL, RR (0..1)
   headlightsIntact: boolean;
   taillightsIntact: boolean;
+  /** Detailed per-corner structural wheel/axle damage [FL, FR, RL, RR]. */
+  wheelDamage?: [WheelDamageState, WheelDamageState, WheelDamageState, WheelDamageState];
 }
 
 /**
- * Launch metadata emitted when a detachable panel (bumper, spoiler, hood, mirror,
- * door, fender) exceeds its structural detachment threshold on an impact.
+ * Legacy launch metadata emitted when a detachable panel exceeds its detachment threshold.
+ * Kept for backwards compatibility alongside `DetachedPartEvent`.
  */
 export interface DetachedPartImpulse {
   partId: string;
@@ -56,11 +79,42 @@ export interface DetachedPartImpulse {
   origin: Vec3;
 }
 
+/**
+ * Full physical detachment event emitted on the step a part breaks free,
+ * including all constituent mesh ids so the engine can launch it tumbling off the car.
+ */
+export interface DetachedPartEvent {
+  partId: string;
+  meshIds: string[];
+  impulse: [number, number, number];
+  angularVelocity: [number, number, number];
+}
+
+/**
+ * Per-mesh scuff/crease mask and dirty vertex range emitted on impacts & resets
+ * so `VehicleRig` can darken/scuff scratched paint and optionally perform sub-range GPU uploads.
+ */
+export interface MeshDamageUpdate {
+  partId: string;
+  /** Per-vertex damage/scuff intensity (0..1, length = vertexCount). */
+  damageIntensity: Float32Array;
+  /** First mutated vertex index (inclusive). */
+  dirtyVertexMin: number;
+  /** Last mutated vertex index (inclusive). */
+  dirtyVertexMax: number;
+  /** Number of vertices modified on this impact. */
+  mutatedCount: number;
+}
+
 export interface DamageStepResult {
   dirtyPartIds: string[];
   detachedPartIds: string[];
-  /** Newly detached parts on this step with suggested debris launch impulses. */
+  /** Newly detached parts on this step (legacy alias kept for backwards compatibility). */
   detachedImpulses?: DetachedPartImpulse[];
+  /** Newly detached parts on this step with constituent meshIds and launch impulses. */
+  detachedParts?: DetachedPartEvent[];
+  /** Per-mesh scuff/crease masks & dirty vertex ranges for paint scuffing and partial uploads. */
+  meshUpdates?: MeshDamageUpdate[];
   health: MechanicalHealth;
 }
 
@@ -91,9 +145,9 @@ export interface RealDamageSimulatorOptions {
    * while `step(dt)` is advancing. Default: 0.05.
    */
   cooldownSeconds?: number;
-  /** Maximum cumulative vertex displacement from rest position in meters. Default: auto (~0.45 m). */
+  /** Maximum cumulative vertex displacement from rest position in meters. Default: auto (~0.62–0.75 m). */
   maxVertexDisplacement?: number;
-  /** Spatial grid cell size in meters for high-poly acceleration. Default: 0.25. */
+  /** Spatial grid cell size in meters for high-poly acceleration. Default: 0.22. */
   cellSize?: number;
   /** Optional explicit rigid cabin safety cell bounds in vehicle-local meters. */
   cabinBox?: DamageBounds;
@@ -101,8 +155,18 @@ export interface RealDamageSimulatorOptions {
   wheelPositions?: [Vec3, Vec3, Vec3, Vec3];
   /** Optional energy thresholds (Joules) overriding default detachment thresholds by partId or logical partId. */
   detachablePartThresholds?: Record<string, number>;
-  /** Whether to locally perturb `payload.normals` when provided. Default: true. */
+  /** Whether to locally recompute/perturb `payload.normals` when provided. Default: true. */
   updateNormals?: boolean;
+}
+
+export function createHealthyWheelDamageState(): WheelDamageState {
+  return {
+    integrity: 1,
+    camberRad: 0,
+    toeRad: 0,
+    wobbleRad: 0,
+    collapsed: 0,
+  };
 }
 
 export function createHealthyMechanicalHealth(): MechanicalHealth {
@@ -113,10 +177,17 @@ export function createHealthyMechanicalHealth(): MechanicalHealth {
     wheelIntegrity: [1, 1, 1, 1],
     headlightsIntact: true,
     taillightsIntact: true,
+    wheelDamage: [
+      createHealthyWheelDamageState(),
+      createHealthyWheelDamageState(),
+      createHealthyWheelDamageState(),
+      createHealthyWheelDamageState(),
+    ],
   };
 }
 
 export function cloneMechanicalHealth(health: MechanicalHealth): MechanicalHealth {
+  const wd = health.wheelDamage;
   return {
     chassisIntegrity: health.chassisIntegrity,
     engineHealth: health.engineHealth,
@@ -129,6 +200,19 @@ export function cloneMechanicalHealth(health: MechanicalHealth): MechanicalHealt
     ],
     headlightsIntact: health.headlightsIntact,
     taillightsIntact: health.taillightsIntact,
+    wheelDamage: wd
+      ? [
+          { ...wd[0] },
+          { ...wd[1] },
+          { ...wd[2] },
+          { ...wd[3] },
+        ]
+      : [
+          { integrity: health.wheelIntegrity[0], camberRad: 0, toeRad: 0, wobbleRad: 0, collapsed: 0 },
+          { integrity: health.wheelIntegrity[1], camberRad: 0, toeRad: 0, wobbleRad: 0, collapsed: 0 },
+          { integrity: health.wheelIntegrity[2], camberRad: 0, toeRad: 0, wobbleRad: 0, collapsed: 0 },
+          { integrity: health.wheelIntegrity[3], camberRad: 0, toeRad: 0, wobbleRad: 0, collapsed: 0 },
+        ],
   };
 }
 

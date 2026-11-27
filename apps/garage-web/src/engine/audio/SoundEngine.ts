@@ -4,6 +4,7 @@ import { EngineSynth } from './EngineSynth';
 import { GarageFoleySynth } from './GarageFoleySynth';
 import { clampFinite, createNoiseBank, safeSetTarget } from './dsp';
 import { ENGINE_PROFILES, resolveEngineProfile } from './engineProfiles';
+import { createTunnelReverbIR, tryCreateConvolver } from './reverb';
 import type {
   AudioMode,
   AudioStateSnapshot,
@@ -34,8 +35,10 @@ function getNativeAudioContextCtor(): AudioContextConstructor | null {
  * Unified, pure-TypeScript procedural Web Audio API sound engine for Blend Garage.
  *
  * - Safe lazy `AudioContext` initialization on `unlock()` for browser autoplay compliance.
- * - Every public method is a safe no-op before unlock, when unsupported, or after `dispose()`.
- * - Master `DynamicsCompressorNode` soft limiter prevents clipping even under redline + heavy crashes.
+ * - 48 kHz physical 4-stroke crankshaft combustion + dual-bank exhaust waveguide `AudioWorklet`
+ *   with seamless fallback when `AudioWorklet` is unavailable.
+ * - Real procedural `ConvolverNode` outdoor exhaust cabinet + concrete mountain tunnel reverb.
+ * - Master `DynamicsCompressorNode` soft limiter prevents clipping under redline + heavy crashes.
  * - Zero React imports, zero external runtime dependencies.
  */
 export class SoundEngine {
@@ -45,6 +48,7 @@ export class SoundEngine {
   private state: AudioStateSnapshot;
   private mode: AudioMode = 'idle';
   private paused = false;
+  private inTunnel = false;
   private profile: EngineAcousticProfile = ENGINE_PROFILES.v10;
   private disposed = false;
 
@@ -57,6 +61,11 @@ export class SoundEngine {
   private foleyBus: GainNode | null = null;
   private crashBus: GainNode | null = null;
   private garageBus: GainNode | null = null;
+
+  // Shared mountain-tunnel concrete reverb send bus (modulated smoothly by frame.inTunnel)
+  private tunnelSendGain: GainNode | null = null;
+  private tunnelConvolver: ConvolverNode | null = null;
+  private tunnelReturnGain: GainNode | null = null;
 
   private engineSynth: EngineSynth | null = null;
   private foleySynth: DrivingFoleySynth | null = null;
@@ -91,7 +100,7 @@ export class SoundEngine {
   };
 
   /**
-   * Creates (if needed) and resumes the `AudioContext`.
+   * Creates (if needed), resumes the `AudioContext`, and loads the 48 kHz physical engine worklet.
    * Call from a user gesture (`pointerdown`, `keydown`, or button click) to satisfy browser autoplay rules.
    * Never throws or rejects; returns `true` when audio is unlocked and ready.
    */
@@ -104,6 +113,11 @@ export class SoundEngine {
       this.unlockPromise = null;
     });
     return this.unlockPromise;
+  }
+
+  /** Returns `true` when the 48 kHz physical 4-stroke `AudioWorklet` engine is active. */
+  isUsingEngineWorklet(): boolean {
+    return this.engineSynth?.isUsingWorklet() ?? false;
   }
 
   /** Sets mute state immediately and ramps master gain without clicking. */
@@ -157,11 +171,22 @@ export class SoundEngine {
     if (!inDrive) {
       this.crashSynth?.updateScrape(0, 0);
       this.foleySynth?.setHorn(false);
+      this.setInTunnel(false);
     }
   }
 
   getMode(): AudioMode {
     return this.mode;
+  }
+
+  /** Smoothly modulates concrete tunnel reverb send (`true` when driving inside a tunnel). */
+  setInTunnel(active: boolean): void {
+    const next = Boolean(active) && this.mode === 'drive';
+    if (next === this.inTunnel) return;
+    this.inTunnel = next;
+    if (this.ctx && this.tunnelSendGain && !this.disposed) {
+      safeSetTarget(this.tunnelSendGain.gain, next ? 0.52 : 0, this.ctx.currentTime, next ? 0.14 : 0.22, 0, 0.85);
+    }
   }
 
   /** Resolves and activates the engine acoustic profile for the selected vehicle. */
@@ -178,9 +203,10 @@ export class SoundEngine {
 
   // ------------------------------------------------------------------ open-world driving audio
 
-  /** Updates continuous engine, road/tire/wind foley, horn, and metallic scrape from live telemetry. */
+  /** Updates continuous engine, road/tire/wind foley, tunnel reverb, horn, and metallic scrape. */
   updateDrive(frame: DriveAudioFrame): void {
     if (!this.isAudibleReady() || this.mode !== 'drive') return;
+    this.setInTunnel(Boolean(frame.inTunnel));
     this.engineSynth?.update(frame);
     this.foleySynth?.update(frame);
     this.crashSynth?.updateScrape(frame.scrapeIntensity, frame.speedMps);
@@ -204,7 +230,7 @@ export class SoundEngine {
     this.foleySynth?.setHorn(active);
   }
 
-  /** Plays a G-force-scaled crash impact (sub-boom, sheet metal, resonators, debris, glass). */
+  /** Plays a G-force-scaled crash impact (sub-boom, buckling groan, sheet metal, resonators, debris, glass). */
   playImpact(event: CrashAudioEvent): void {
     if (!this.isAudibleReady()) return;
     this.crashSynth?.playImpact(event);
@@ -303,6 +329,7 @@ export class SoundEngine {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.inTunnel = false;
 
     const ctx = this.ctx;
     if (ctx && this.masterGain) {
@@ -324,6 +351,9 @@ export class SoundEngine {
       this.foleyBus,
       this.crashBus,
       this.garageBus,
+      this.tunnelSendGain,
+      this.tunnelConvolver,
+      this.tunnelReturnGain,
       this.mixBus,
       this.limiter,
       this.masterGain,
@@ -340,6 +370,9 @@ export class SoundEngine {
     this.foleyBus = null;
     this.crashBus = null;
     this.garageBus = null;
+    this.tunnelSendGain = null;
+    this.tunnelConvolver = null;
+    this.tunnelReturnGain = null;
     this.mixBus = null;
     this.limiter = null;
     this.masterGain = null;
@@ -371,16 +404,19 @@ export class SoundEngine {
         this.buildAudioGraph(ctx);
       }
 
-      if (this.ctx.state === 'suspended' && typeof this.ctx.resume === 'function') {
-        await this.ctx.resume();
-      }
+      const workletTask = this.engineSynth?.initWorklet().catch(() => false) ?? Promise.resolve(false);
+      const resumeTask =
+        this.ctx.state === 'suspended' && typeof this.ctx.resume === 'function'
+          ? this.ctx.resume()
+          : Promise.resolve();
+
+      await Promise.all([resumeTask, workletTask]);
 
       if (this.disposed || !this.ctx) return false;
 
       const running = this.ctx.state === 'running' || this.ctx.state === undefined;
       this.updateState({ unlocked: running });
       this.applyMasterGain();
-      // Sync current mode & profile onto the newly active graph
       this.setMode(this.mode);
       return running;
     } catch {
@@ -419,20 +455,41 @@ export class SoundEngine {
     mixBus.connect(limiter);
 
     const engineBus = ctx.createGain();
-    engineBus.gain.value = 0.86;
+    engineBus.gain.value = 0.90;
     engineBus.connect(mixBus);
 
     const foleyBus = ctx.createGain();
-    foleyBus.gain.value = 0.82;
+    foleyBus.gain.value = 0.80;
     foleyBus.connect(mixBus);
 
     const crashBus = ctx.createGain();
-    crashBus.gain.value = 0.94;
+    crashBus.gain.value = 0.96;
     crashBus.connect(mixBus);
 
     const garageBus = ctx.createGain();
     garageBus.gain.value = 0.86;
     garageBus.connect(mixBus);
+
+    // Concrete mountain-tunnel reverb send bus (engine + foley/horn + crashes echo in tunnels!)
+    const tunnelIR = createTunnelReverbIR(ctx);
+    const tunnelConvolver = tryCreateConvolver(ctx, tunnelIR);
+    if (tunnelConvolver) {
+      const tunnelSendGain = ctx.createGain();
+      tunnelSendGain.gain.value = 0;
+      const tunnelReturnGain = ctx.createGain();
+      tunnelReturnGain.gain.value = 0.85;
+
+      engineBus.connect(tunnelSendGain);
+      foleyBus.connect(tunnelSendGain);
+      crashBus.connect(tunnelSendGain);
+      tunnelSendGain.connect(tunnelConvolver);
+      tunnelConvolver.connect(tunnelReturnGain);
+      tunnelReturnGain.connect(mixBus);
+
+      this.tunnelSendGain = tunnelSendGain;
+      this.tunnelConvolver = tunnelConvolver;
+      this.tunnelReturnGain = tunnelReturnGain;
+    }
 
     const noise = createNoiseBank(ctx);
 

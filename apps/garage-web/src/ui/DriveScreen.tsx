@@ -1,14 +1,16 @@
 import { memo, useState } from 'react';
-import { AlertTriangle, ArrowLeft, Camera, ChevronDown, ChevronUp, Gamepad2, Keyboard, Lightbulb, MapPin, RotateCcw, Volume2, VolumeX, Wrench } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Camera, ChevronDown, ChevronUp, Eye, Gamepad2, Keyboard, Lightbulb, MapPin, RotateCcw, Volume2, VolumeX, Wrench } from 'lucide-react';
 import { DRIVE_CAMERA_VIEWS, type DriveCameraView } from '../engine/types';
 import { useEngine, useGarage } from './engine';
 import { formatTriangles } from './format';
 
 const WARP_SPOTS = [
-  { id: 'start', label: 'Garage Plaza' },
-  { id: 'highway', label: 'Highway' },
+  { id: 'start', label: 'Garage HQ' },
+  { id: 'coast', label: 'Pacific Coast' },
+  { id: 'highway', label: 'Expressway' },
   { id: 'canyon', label: 'Canyon Pass' },
-  { id: 'proving-grounds', label: 'Crash Proving Grounds' },
+  { id: 'desert', label: 'Red-Rock Rally' },
+  { id: 'proving-grounds', label: 'Crash Arena' },
 ] as const;
 
 const WHEEL_LABELS = ['FL', 'FR', 'RL', 'RR'] as const;
@@ -52,12 +54,12 @@ const PerfPill = memo(function PerfPill() {
   const perf = useGarage((s) => s.perf);
   if (perf.fps === 0) return null;
   return (
-    <div className="tabular flex w-max gap-3.5 rounded bg-steel-900/90 px-3 py-1.5 text-xs text-alu-300 shadow-[0_6px_18px_rgb(0_0_0/0.35)]">
+    <div className="tabular flex w-max gap-3 rounded bg-steel-900/90 px-2.5 py-1 text-[11px] text-alu-300 shadow-[0_6px_18px_rgb(0_0_0/0.35)]">
       <span>
         <b className="font-bold text-white">{perf.fps}</b> fps
       </span>
       <span>
-        <b className="font-bold text-white">{perf.drawCalls}</b> draw calls
+        <b className="font-bold text-white">{perf.drawCalls}</b> calls
       </span>
       <span>
         <b className="font-bold text-white">{formatTriangles(perf.triangles)}</b> tris
@@ -70,61 +72,82 @@ const TopLeftBar = memo(function TopLeftBar({
   carModel,
   spawnName,
   cameraView,
+  inTunnel,
   busy,
 }: {
   carModel: string | null;
   spawnName: string;
   cameraView: DriveCameraView;
+  inTunnel: boolean;
   busy: boolean;
 }) {
   const engine = useEngine();
   const cameraLabel = DRIVE_CAMERA_VIEWS.find((v) => v.id === cameraView)?.label ?? cameraView;
+  const inspecting = cameraView === 'inspect';
 
   return (
-    <div className="pointer-events-auto absolute left-5 top-4 flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="pointer-events-auto absolute left-4 top-3.5 flex max-w-[calc(100%-395px)] flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <PerfPill />
         {carModel ? (
-          <div className="rounded bg-steel-900/90 px-3 py-1.5 text-xs text-alu-300 shadow-[0_6px_18px_rgb(0_0_0/0.35)]">
+          <div className="rounded bg-steel-900/90 px-2.5 py-1 text-[11px] text-alu-300 shadow-[0_6px_18px_rgb(0_0_0/0.35)]">
             <span className="font-badge font-extrabold uppercase text-white">{carModel}</span>
           </div>
         ) : null}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1.5">
-        <div className="flex items-center gap-0.5 rounded-md border border-white/10 bg-steel-900/95 p-[3px] shadow-[0_8px_20px_rgb(0_0_0/0.4)]" role="group" aria-label="Quick warp locations">
-          <span className="flex items-center px-1.5 text-alu-500" aria-hidden>
-            <MapPin size={13} />
+        {inTunnel ? (
+          <span className="rounded bg-lift-500/20 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.06em] text-lift-400">
+            Tunnel
           </span>
-          {WARP_SPOTS.map(({ id, label }) => {
-            const active = spawnName === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                disabled={busy}
-                aria-pressed={active}
-                onClick={() => engine.resetDriveCar(id)}
-                className={`h-7 rounded px-2.5 text-xs font-semibold transition-colors disabled:opacity-40 ${
-                  active ? 'bg-lift-500 font-bold text-steel-950' : 'text-alu-300 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-
+        ) : null}
         <button
           type="button"
           disabled={busy}
           onClick={() => engine.cycleDriveCamera()}
-          className="inline-flex h-[34px] items-center gap-1.5 rounded-md border border-white/10 bg-steel-900/95 px-2.5 text-xs font-semibold text-alu-200 shadow-[0_8px_20px_rgb(0_0_0/0.4)] transition-colors hover:bg-steel-800 hover:text-white disabled:opacity-40"
+          className="inline-flex h-7 items-center gap-1 rounded border border-white/10 bg-steel-900/95 px-2 text-[11px] font-semibold text-alu-200 shadow-[0_6px_16px_rgb(0_0_0/0.35)] transition-colors hover:bg-steel-800 hover:text-white disabled:opacity-40"
         >
-          <Camera size={13} className="text-lift-500" />
+          <Camera size={12} className="text-lift-500" />
           <span>{cameraLabel}</span>
-          <kbd className="rounded bg-black/50 px-1.5 py-0.5 font-mono text-[10px] text-alu-400">C</kbd>
+          <kbd className="rounded bg-black/50 px-1 py-0.5 font-mono text-[9px] text-alu-400">C</kbd>
         </button>
+
+        <button
+          type="button"
+          disabled={busy}
+          aria-pressed={inspecting}
+          onClick={() => engine.toggleDriveInspect()}
+          className={`inline-flex h-7 items-center gap-1 rounded border px-2 text-[11px] font-bold shadow-[0_6px_16px_rgb(0_0_0/0.35)] transition-colors disabled:opacity-40 ${
+            inspecting
+              ? 'border-lift-400 bg-lift-500 text-steel-950 hover:bg-lift-400'
+              : 'border-white/10 bg-steel-900/95 text-alu-200 hover:bg-steel-800 hover:text-white'
+          }`}
+        >
+          <Eye size={12} />
+          <span>Inspect</span>
+          <kbd className={`rounded px-1 py-0.5 font-mono text-[9px] ${inspecting ? 'bg-black/20 text-steel-950' : 'bg-black/50 text-alu-400'}`}>V</kbd>
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-0.5 rounded-md border border-white/10 bg-steel-900/95 p-[3px] shadow-[0_8px_20px_rgb(0_0_0/0.4)] w-max max-w-full" role="group" aria-label="Quick warp locations">
+        <span className="flex items-center px-1 text-alu-500" aria-hidden>
+          <MapPin size={12} />
+        </span>
+        {WARP_SPOTS.map(({ id, label }) => {
+          const active = spawnName === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              disabled={busy}
+              aria-pressed={active}
+              onClick={() => engine.resetDriveCar(id)}
+              className={`h-[26px] rounded px-2 text-[11px] font-semibold transition-colors disabled:opacity-40 ${
+                active ? 'bg-lift-500 font-bold text-steel-950' : 'text-alu-300 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -137,10 +160,10 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
   const [volumeOpen, setVolumeOpen] = useState(false);
 
   return (
-    <div className="pointer-events-auto absolute right-5 top-4 flex flex-col items-end gap-2">
+    <div className="pointer-events-auto absolute right-4 top-3.5 flex flex-col items-end gap-1.5">
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         <div
-          className={`inline-flex h-9 items-center gap-1.5 rounded-md border px-2 text-xs font-semibold shadow-[0_8px_20px_rgb(0_0_0/0.4)] transition-colors ${
+          className={`inline-flex h-8 items-center gap-1 rounded-md border px-1.5 text-xs font-semibold shadow-[0_8px_20px_rgb(0_0_0/0.4)] transition-colors ${
             audio.muted
               ? 'border-chest-500/60 bg-steel-900/95 text-chest-400'
               : 'border-white/15 bg-steel-900/95 text-alu-200'
@@ -155,7 +178,7 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
             onClick={() => engine.toggleMute()}
             className="flex h-6 w-6 items-center justify-center rounded hover:bg-white/10"
           >
-            {audio.muted ? <VolumeX size={14} /> : <Volume2 size={14} className="text-lift-500" />}
+            {audio.muted ? <VolumeX size={13} /> : <Volume2 size={13} className="text-lift-500" />}
           </button>
           {volumeOpen ? (
             <label className="flex items-center gap-1.5 pr-1">
@@ -177,7 +200,7 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
               <span className="tabular w-7 text-right text-[10px] font-semibold text-alu-300">{Math.round((audio.muted ? 0 : audio.volume) * 100)}%</span>
             </label>
           ) : (
-            <kbd className="rounded bg-black/50 px-1 py-0.5 font-mono text-[10px] text-alu-400">M</kbd>
+            <kbd className="rounded bg-black/50 px-1 py-0.5 font-mono text-[9px] text-alu-400">M</kbd>
           )}
         </div>
 
@@ -185,37 +208,37 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
           type="button"
           disabled={busy}
           onClick={() => engine.repairDriveCar()}
-          className={`inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-xs font-bold shadow-[0_8px_20px_rgb(0_0_0/0.4)] transition-colors disabled:opacity-40 ${
+          className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-bold shadow-[0_8px_20px_rgb(0_0_0/0.4)] transition-colors disabled:opacity-40 ${
             isDamaged
               ? 'border-lift-400 bg-lift-500 text-steel-950 hover:bg-lift-400'
               : 'border-white/15 bg-steel-900/95 text-alu-200 hover:bg-steel-800 hover:text-white'
           }`}
         >
-          <Wrench size={13} />
-          <span>Repair Car</span>
-          <kbd className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${isDamaged ? 'bg-black/20 text-steel-950' : 'bg-black/50 text-alu-400'}`}>R</kbd>
+          <Wrench size={12} />
+          <span>Repair</span>
+          <kbd className={`rounded px-1 py-0.5 font-mono text-[9px] ${isDamaged ? 'bg-black/20 text-steel-950' : 'bg-black/50 text-alu-400'}`}>R</kbd>
         </button>
 
         <button
           type="button"
           disabled={busy}
           onClick={() => engine.resetDriveCar()}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-white/15 bg-steel-900/95 px-3 text-xs font-semibold text-alu-200 shadow-[0_8px_20px_rgb(0_0_0/0.4)] transition-colors hover:bg-steel-800 hover:text-white disabled:opacity-40"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/15 bg-steel-900/95 px-2.5 text-xs font-semibold text-alu-200 shadow-[0_8px_20px_rgb(0_0_0/0.4)] transition-colors hover:bg-steel-800 hover:text-white disabled:opacity-40"
         >
-          <RotateCcw size={13} />
-          <span>Reset to Road</span>
-          <kbd className="rounded bg-black/50 px-1.5 py-0.5 font-mono text-[10px] text-alu-400">T</kbd>
+          <RotateCcw size={12} />
+          <span>Road</span>
+          <kbd className="rounded bg-black/50 px-1 py-0.5 font-mono text-[9px] text-alu-400">T</kbd>
         </button>
 
         <button
           type="button"
           disabled={busy}
           onClick={() => void engine.exitDrive()}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-chest-400/70 bg-chest-700/95 px-3 text-xs font-bold text-white shadow-[0_8px_20px_rgb(0_0_0/0.45)] transition-colors hover:bg-chest-500 disabled:opacity-40"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-chest-400/70 bg-chest-700/95 px-2.5 text-xs font-bold text-white shadow-[0_8px_20px_rgb(0_0_0/0.45)] transition-colors hover:bg-chest-500 disabled:opacity-40"
         >
-          <ArrowLeft size={14} />
-          <span>Back to Shop</span>
-          <kbd className="rounded bg-black/35 px-1.5 py-0.5 font-mono text-[10px] text-white/85">Esc</kbd>
+          <ArrowLeft size={13} />
+          <span>Shop</span>
+          <kbd className="rounded bg-black/35 px-1 py-0.5 font-mono text-[9px] text-white/85">Esc</kbd>
         </button>
       </div>
 
@@ -224,18 +247,18 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
           type="button"
           aria-expanded={controlsOpen}
           onClick={() => setControlsOpen((v) => !v)}
-          className="inline-flex h-7 items-center gap-1.5 rounded border border-white/10 bg-steel-900/92 px-2.5 text-[11px] font-semibold text-alu-300 hover:bg-steel-800 hover:text-white"
+          className="inline-flex h-6 items-center gap-1 rounded border border-white/10 bg-steel-900/92 px-2 text-[11px] font-semibold text-alu-300 hover:bg-steel-800 hover:text-white"
         >
           <span>Controls</span>
-          {controlsOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          {controlsOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
         </button>
 
         {controlsOpen ? (
-          <div className="mt-1.5 w-[300px] rounded-md border border-white/10 bg-steel-900/96 p-3 text-[11px] text-alu-300 shadow-[0_14px_30px_rgb(0_0_0/0.55)]">
+          <div className="mt-1.5 w-[332px] rounded-md border border-white/10 bg-steel-900/96 p-3 text-[11px] text-alu-300 shadow-[0_14px_30px_rgb(0_0_0/0.55)]">
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="mb-1.5 flex items-center gap-1 font-bold uppercase tracking-[0.06em] text-lift-500">
-                  <Keyboard size={12} /> Keyboard
+                  <Keyboard size={12} /> Keyboard / Mouse
                 </p>
                 <ul className="space-y-1 text-alu-300">
                   <li className="flex justify-between gap-2"><span>Drive</span><kbd className="font-mono text-white">WASD / ↑↓←→</kbd></li>
@@ -243,6 +266,8 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
                   <li className="flex justify-between gap-2"><span>Shift</span><kbd className="font-mono text-white">Q / E</kbd></li>
                   <li className="flex justify-between gap-2"><span>Horn / Lights</span><kbd className="font-mono text-white">H / L</kbd></li>
                   <li className="flex justify-between gap-2"><span>Camera / Mute</span><kbd className="font-mono text-white">C / M</kbd></li>
+                  <li className="flex justify-between gap-2"><span>Inspect / Pan</span><kbd className="font-mono text-white">V</kbd></li>
+                  <li className="flex justify-between gap-2"><span>Orbit / Pan</span><kbd className="font-mono text-white">Drag / R-Drag</kbd></li>
                   <li className="flex justify-between gap-2"><span>Repair / Reset</span><kbd className="font-mono text-white">R / T</kbd></li>
                   <li className="flex justify-between gap-2"><span>Back to Shop</span><kbd className="font-mono text-white">Esc</kbd></li>
                 </ul>
@@ -253,9 +278,11 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
                 </p>
                 <ul className="space-y-1 text-alu-300">
                   <li className="flex justify-between gap-2"><span>Steer</span><kbd className="font-mono text-white">L-Stick</kbd></li>
+                  <li className="flex justify-between gap-2"><span>Orbit Cam</span><kbd className="font-mono text-white">R-Stick</kbd></li>
                   <li className="flex justify-between gap-2"><span>Gas / Brake</span><kbd className="font-mono text-white">RT / LT</kbd></li>
                   <li className="flex justify-between gap-2"><span>Handbrake</span><kbd className="font-mono text-white">A / B</kbd></li>
                   <li className="flex justify-between gap-2"><span>Shift</span><kbd className="font-mono text-white">LB / RB</kbd></li>
+                  <li className="flex justify-between gap-2"><span>Inspect Cam</span><kbd className="font-mono text-white">L3</kbd></li>
                   <li className="flex justify-between gap-2"><span>Horn / Lights</span><kbd className="font-mono text-white">R3 / D-Pad</kbd></li>
                   <li className="flex justify-between gap-2"><span>Camera</span><kbd className="font-mono text-white">Y / △</kbd></li>
                   <li className="flex justify-between gap-2"><span>Repair / Shop</span><kbd className="font-mono text-white">Back / Start</kbd></li>
@@ -265,6 +292,17 @@ const TopRightBar = memo(function TopRightBar({ isDamaged, busy }: { isDamaged: 
           </div>
         ) : null}
       </div>
+    </div>
+  );
+});
+
+const InspectHintBar = memo(function InspectHintBar({ inspecting }: { inspecting: boolean }) {
+  if (!inspecting) return null;
+  return (
+    <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 rounded-md border border-lift-500/40 bg-steel-900/94 px-3.5 py-1.5 text-xs font-medium text-alu-200 shadow-[0_8px_22px_rgb(0_0_0/0.5)]">
+      <span className="font-bold text-lift-500">Inspect Mode</span>
+      <span className="mx-2 text-steel-500">·</span>
+      Drag to orbit · Right-drag / Shift+drag to pan · Scroll to zoom · Double-click to reset · <kbd className="rounded bg-black/50 px-1 py-0.5 font-mono text-[10px] text-white">V</kbd> to resume
     </div>
   );
 });
@@ -429,12 +467,13 @@ const SpeedCluster = memo(function SpeedCluster() {
   );
 });
 
-/** Open-World Drive Mode HUD: split into focused sub-components with zero backdrop-blur GPU readbacks. */
+/** Open-World Drive Mode HUD: 6-biome quick-warp bar, Inspect toggle, split sub-components with zero backdrop-blur. */
 export function DriveScreen() {
   const hasDrive = useGarage((s) => s.drive !== null);
   const carModel = useGarage((s) => s.cars.find((c) => c.id === s.selectedCarId)?.model ?? null);
   const spawnName = useGarage((s) => s.drive?.spawnName ?? 'start');
   const cameraView = useGarage((s) => s.drive?.cameraView ?? 'chase');
+  const inTunnel = useGarage((s) => s.drive?.inTunnel ?? false);
   const busy = useGarage((s) => s.busy !== null);
   const isDamaged = useGarage((s) => {
     const h = s.drive?.health;
@@ -452,8 +491,9 @@ export function DriveScreen() {
 
   return (
     <div className="pointer-events-none absolute inset-0">
-      <TopLeftBar carModel={carModel} spawnName={spawnName} cameraView={cameraView} busy={busy} />
+      <TopLeftBar carModel={carModel} spawnName={spawnName} cameraView={cameraView} inTunnel={inTunnel} busy={busy} />
       <TopRightBar isDamaged={isDamaged} busy={busy} />
+      <InspectHintBar inspecting={cameraView === 'inspect'} />
       <VehicleDiagnostics />
       <SpeedCluster />
     </div>

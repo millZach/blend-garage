@@ -1,14 +1,18 @@
 import * as THREE from 'three';
 import { clamp, lerp, smoothstep } from '../math';
-import { computeRoadBlend, type RoadNetwork } from './roads';
+import { computeRoadBlend, isOnCoastBridgeSpan, type RoadNetwork } from './roads';
 import type { WorldTextures } from './textures';
+import { OCEAN_LEVEL, shorelineXAtZ } from './water';
 
-export const WORLD_SIZE = 1200;
+export const WORLD_SIZE = 2400;
 export const WORLD_HALF = WORLD_SIZE / 2;
-/** Grid resolution for both visual terrain mesh and physics heightfield (161x161 = 7.5m cell spacing). */
-export const TERRAIN_SEGMENTS = 160;
-/** Splits the 160x160 visual terrain into 4x4 (16) frustum-cullable seamless tiles (40x40 quads each). */
-const TERRAIN_TILE_GRID = 4;
+/**
+ * Grid resolution for both visual terrain mesh and physics heightfield:
+ * 204x204 subdivisions (~11.76m cell spacing, 205x205 samples), divisible cleanly into 6x6 = 36 tiles!
+ */
+export const TERRAIN_SEGMENTS = 204;
+/** Splits the 204x204 visual terrain into 6x6 (36) frustum-cullable seamless tiles (34x34 quads each). */
+const TERRAIN_TILE_GRID = 6;
 
 function hash2(ix: number, iz: number): number {
   let n = Math.imul(ix, 374761393) + Math.imul(iz, 668265263);
@@ -60,38 +64,134 @@ function ridgedFbm(x: number, z: number, octaves = 4): number {
   return sum;
 }
 
-/**
- * Unflattened California coastal valley & canyon base terrain:
- * - Broad flat valley floor around Blend Garage Plaza, Proving Grounds & Highway straightaway
- * - Sculpted northwest canyon hills with natural sandstone outcrops
- * - Dramatic multi-layered ridged coastal mountain rim framing the horizon
- */
-function baseScenicHeight(x: number, z: number): number {
-  const nBroad = fbm(x * 0.0032 + 4.1, z * 0.0032 - 2.7, 4);
-  const nDetail = fbm(x * 0.011 - 7.3, z * 0.011 + 5.2, 3);
-  const nRidge = ridgedFbm(x * 0.0024 + 1.8, z * 0.0024 - 3.4, 4);
+/** Iconic flat-topped Red-Rock Mesas & Buttes framing the South-East Desert Rally Loop (clear of dirt road!). */
+const DESERT_MESAS: readonly { x: number; z: number; rx: number; rz: number; h: number }[] = [
+  { x: 640, z: 715, rx: 105, rz: 82, h: 42 }, // Central Monument Mesa inside the Rally Loop!
+  { x: 1030, z: 455, rx: 115, rz: 95, h: 52 },
+  { x: 1045, z: 895, rx: 120, rz: 105, h: 56 },
+  { x: 525, z: 1065, rx: 110, rz: 88, h: 48 },
+  { x: 245, z: 970, rx: 95, rz: 80, h: 38 },
+];
 
-  // Northwest canyon hills rise around (-255, -115).
-  const dxCanyon = (x + 255) / 185;
-  const dzCanyon = (z + 115) / 170;
-  const canyonMound = Math.max(0, 1 - (dxCanyon * dxCanyon + dzCanyon * dzCanyon));
-  const canyonHeight = canyonMound * canyonMound * (22 + nRidge * 8) + canyonMound * nBroad * 6;
+/** Returns 0..1 blend weight for the South-East Red-Rock Desert biome. */
+export function desertBiomeWeight(x: number, z: number): number {
+  const wx = smoothstep(140, 360, x);
+  const wz = smoothstep(260, 480, z);
+  return wx * wz;
+}
 
-  // Scenic rolling coastal foothills in the valley outskirts.
-  const valleyDist = Math.hypot(x - 40, z - 60);
-  const gentleHills = smoothstep(160, 445, valleyDist) * (4.2 + nBroad * 7.2 + nDetail * 1.9);
-
-  // Ridged coastal mountain range framing the perimeter (450m -> 600m).
-  const edgeDist = Math.max(Math.abs(x), Math.abs(z));
-  const rimFactor = smoothstep(450, 595, edgeDist);
-  const rimHeight = rimFactor * rimFactor * (34 + nRidge * 62 + Math.abs(nBroad) * 18 + nDetail * 4);
-
-  return Math.max(-0.4, canyonHeight + gentleHills + rimHeight);
+/** Returns 0..1 blend weight for the North-East Redwood & Alpine Mountain biome. */
+export function alpineBiomeWeight(x: number, z: number): number {
+  const wx = smoothstep(60, 290, x);
+  const wz = smoothstep(-60, -260, z);
+  return wx * wz;
 }
 
 /**
- * Applies California coastal biome coloring (golden wild grasses, olive sagebrush, dusty road verges,
- * and stratified warm sandstone/granite cliff rock) to a terrain vertex.
+ * Multi-Biome 2400x2400m California Base Terrain:
+ * - West: Pacific Ocean seabed, golden sandy beaches, coastal bluffs & dramatic ocean bay inlet
+ * - Center: Flat Motorsport Valley floor for Blend Garage HQ & 1.36 km Valley Expressway
+ * - South-West: Flat Airfield Stunt Park & Crash Test Arena basin
+ * - North-East: Dramatic Redwood & Alpine Mountain massif rising to +75..+115m
+ * - South-East: Warm terracotta Desert Basin punctuated by flat-topped Red-Rock Sandstone Mesas
+ * - North/East/South Perimeter: Layered ridged Sierra/coastal mountain range (West left open to Pacific Ocean!)
+ */
+function baseScenicHeight(x: number, z: number): number {
+  const nBroad = fbm(x * 0.0021 + 4.1, z * 0.0021 - 2.7, 4);
+  const nDetail = fbm(x * 0.0085 - 7.3, z * 0.0085 + 5.2, 3);
+  const nRidge = ridgedFbm(x * 0.0016 + 1.8, z * 0.0016 - 3.4, 4);
+
+  // 1. North-East Alpine Mountain Massif (peaks around (+560, -520) up to +95m).
+  const dxAlp = (x - 540) / 480;
+  const dzAlp = (z + 480) / 430;
+  const alpRadial = Math.max(0, 1 - (dxAlp * dxAlp + dzAlp * dzAlp));
+  const alpineHeight = alpRadial * alpRadial * (66 + nRidge * 44) + alpRadial * nBroad * 12;
+
+  // 2. North Mountain Ridge framing the Sierra Ridge Tunnel (centered around (-20, -620)).
+  const dxTun = (x + 20) / 310;
+  const dzTun = (z + 650) / 210;
+  const tunRadial = Math.max(0, 1 - (dxTun * dxTun + dzTun * dzTun));
+  const tunnelFlankRidge = tunRadial * tunRadial * (42 + nRidge * 28);
+
+  // 3. South-East Red-Rock Desert Mesas & rolling desert floor.
+  let mesaHeight = 0;
+  for (let i = 0; i < DESERT_MESAS.length; i++) {
+    const m = DESERT_MESAS[i];
+    const warp = fbm(x * 0.012 + i * 3.1, z * 0.012 - i * 2.7, 2) * 0.16;
+    const d = Math.hypot((x - m.x) / m.rx, (z - m.z) / m.rz) + warp;
+    if (d < 1.15) {
+      // Steep terraced sandstone mesa walls flattening cleanly into a broad plateau top!
+      const plateau = 1 - smoothstep(0.56, 1.05, d);
+      const stepLedge = smoothstep(0.74, 0.86, 1 - d) * 0.16;
+      const topRough = nDetail * 1.6;
+      mesaHeight = Math.max(mesaHeight, (plateau + stepLedge * (1 - plateau)) * m.h + plateau * topRough);
+    }
+  }
+  const desertRoll = desertBiomeWeight(x, z) * (2.5 + nBroad * 5.5 + nDetail * 1.4);
+
+  // 4. Gentle California coastal valley foothills away from center.
+  const valleyDist = Math.hypot(x + 80, z - 120);
+  const gentleHills = smoothstep(320, 880, valleyDist) * (3.5 + nBroad * 8.5 + nDetail * 2.0);
+
+  // 5. Outer Perimeter Mountain Rim (North, East, South only — keep West open to Pacific Ocean!).
+  const northRim = smoothstep(-860, -1185, z);
+  const southRim = smoothstep(890, 1185, z);
+  const eastRim = smoothstep(880, 1185, x);
+  const westOceanMask = smoothstep(-760, -560, x); // fades perimeter mountains cleanly before the Pacific Ocean
+  const rimFactor = Math.max(eastRim, Math.max(northRim, southRim) * (0.25 + 0.75 * westOceanMask));
+  const rimHeight = rimFactor * rimFactor * (46 + nRidge * 78 + Math.abs(nBroad) * 22 + nDetail * 5);
+
+  let h = Math.max(0, alpineHeight + tunnelFlankRidge + mesaHeight + desertRoll + gentleHills + rimHeight);
+
+  // 6. Western Pacific Coastline, Golden Beaches, Coastal Bluffs & Ocean Bay Inlet!
+  const coastX = shorelineXAtZ(z);
+  const distInland = x - coastX; // < 0 = ocean seabed, 0 = shoreline (-4m), > 0 = beach & bluffs
+
+  if (distInland < 160) {
+    // Gentle coastal bluff lift (+11..+16m) right behind the shoreline so Pacific Coast Hwy has dramatic ocean overlooks!
+    const bluffBell = Math.exp(-Math.pow((distInland - 75) / 68, 2));
+    const bluffElev = bluffBell * (12.5 + nBroad * 3.5);
+    const landH = Math.max(h, bluffElev);
+
+    if (distInland <= 0) {
+      // Submerged seabed sloping cleanly down to -10m under Pacific Ocean water (y = -4m).
+      const seaDepth = smoothstep(0, -120, distInland);
+      h = lerp(OCEAN_LEVEL - 0.15, -10.5, seaDepth);
+    } else {
+      // Sandy beach & coastal cliff face rising from ocean waterline up to the bluffs.
+      const rise = smoothstep(0, 72, distInland);
+      const beachSlope = lerp(OCEAN_LEVEL - 0.15, landH, rise);
+      h = lerp(beachSlope, landH, smoothstep(55, 160, distInland));
+    }
+  }
+
+  // Deepen the coastal bay directly under the Steel-Arch Bridge so turquoise water fills the channel.
+  if (isOnCoastBridgeSpan(x, z)) {
+    const bayClear = 1 - smoothstep(75, 124, Math.abs(z));
+    h = Math.min(h, lerp(h, -8.5, bayClear));
+  }
+
+  return h;
+}
+
+const _c1 = new THREE.Color();
+const _c2 = new THREE.Color();
+const _c3 = new THREE.Color();
+const _c4 = new THREE.Color();
+const _c5 = new THREE.Color();
+const _c6 = new THREE.Color();
+const _c7 = new THREE.Color();
+const _c8 = new THREE.Color();
+const _c9 = new THREE.Color();
+const _c10 = new THREE.Color();
+const _c11 = new THREE.Color();
+
+/**
+ * Multi-biome California vertex coloring:
+ * - West Coast: Golden sandy beaches & wet tidal sand fading into sunlit coastal bluffs
+ * - Central Valley: Sun-cured golden oats, olive meadows, sagebrush & dusty road shoulders
+ * - North-East Alpine: Rich conifer forest floor, mossy pine needles, exposed granite cliffs & sunlit peaks
+ * - South-East Desert: Terracotta ochre sand, iron-oxide red-rock sandstone strata & dry desert mesas
  */
 function evaluateCaliforniaBiomeColor(
   x: number,
@@ -107,49 +207,74 @@ function evaluateCaliforniaBiomeColor(
   const cSageScrub = _c4.setHex(0x747c56);
   const cDustyEarth = _c5.setHex(0x948064);
   const cSandstone = _c6.setHex(0x8c7b66);
-  const cGraniteShadow = _c7.setHex(0x655e55);
-  const cWarmPeak = _c8.setHex(0xa89780);
+  const cGraniteShadow = _c7.setHex(0x635d55);
+  const cWarmPeak = _c8.setHex(0xaca08d);
 
-  const macro = fbm(x * 0.0055 + 2.1, z * 0.0055 - 1.3, 3) * 0.5 + 0.5;
-  const patch = fbm(x * 0.017 - 4.7, z * 0.017 + 6.3, 3) * 0.5 + 0.5;
-  const micro = fbm(x * 0.045 + 9.2, z * 0.045 - 3.8, 2) * 0.5 + 0.5;
+  const macro = fbm(x * 0.0042 + 2.1, z * 0.0042 - 1.3, 3) * 0.5 + 0.5;
+  const patch = fbm(x * 0.014 - 4.7, z * 0.014 + 6.3, 3) * 0.5 + 0.5;
+  const micro = fbm(x * 0.036 + 9.2, z * 0.036 - 3.8, 2) * 0.5 + 0.5;
 
+  // Base California coastal valley meadow.
   out.copy(cOliveMeadow).lerp(cGoldenGrass, smoothstep(0.28, 0.74, macro));
-  out.lerp(cDryOat, smoothstep(0.52, 0.88, patch) * 0.55);
-  out.lerp(cSageScrub, smoothstep(0.18, 0.55, micro) * 0.35);
+  out.lerp(cDryOat, smoothstep(0.52, 0.88, patch) * 0.52);
+  out.lerp(cSageScrub, smoothstep(0.18, 0.55, micro) * 0.34);
 
-  if (shoulderBlend > 0.001) {
-    out.lerp(cDustyEarth, shoulderBlend * 0.78);
+  // --- North-East Redwood & Alpine Forest Biome ---
+  const alpW = alpineBiomeWeight(x, z);
+  if (alpW > 0.001) {
+    const cPineFloor = _c10.setHex(0x475939);
+    const cRedwoodDuff = _c11.setHex(0x6a5a42);
+    cPineFloor.lerp(cRedwoodDuff, smoothstep(0.35, 0.78, patch) * 0.55);
+    out.lerp(cPineFloor, alpW * 0.72);
   }
 
-  const foothillDry = smoothstep(5, 22, y);
-  out.lerp(cDustyEarth, foothillDry * 0.36);
+  // --- South-East Red-Rock Desert & Sandstone Mesa Biome ---
+  const desW = desertBiomeWeight(x, z);
+  if (desW > 0.001) {
+    const cDesertSand = _c10.setHex(0xc89362);
+    const cTerracotta = _c11.setHex(0xb4623e);
+    cDesertSand.lerp(cTerracotta, smoothstep(0.32, 0.78, macro) * 0.65 + smoothstep(0.45, 0.85, patch) * 0.25);
+    out.lerp(cDesertSand, desW * 0.94);
+  }
 
-  const strataWave = Math.sin(y * 0.72 + fbm(x * 0.018, z * 0.018, 2) * 2.4) * 0.5 + 0.5;
+  // Warm dusty earth along road verges & shoulders.
+  if (shoulderBlend > 0.001) {
+    const vergeCol = desW > 0.4 ? _c10.setHex(0xb67b50) : cDustyEarth;
+    out.lerp(vergeCol, shoulderBlend * 0.72);
+  }
+
+  // Stratified cliff rock (red-rock iron-oxide strata in desert; warm sandstone/granite in alpine/canyon).
+  const strataWave = Math.sin(y * 0.62 + fbm(x * 0.015, z * 0.015, 2) * 2.6) * 0.5 + 0.5;
   const rockTone = _c9.copy(cGraniteShadow).lerp(cSandstone, 0.35 + strataWave * 0.65);
+  if (desW > 0.05) {
+    const cRedCliff = _c10.setHex(0x8e4228).lerp(_c11.setHex(0xc77548), strataWave);
+    rockTone.lerp(cRedCliff, desW * 0.92);
+  }
 
-  const slopeRock = smoothstep(0.06, 0.24, slope);
-  const heightRock = smoothstep(20, 48, y) * 0.72;
+  const slopeRock = smoothstep(0.07, 0.25, slope);
+  const heightRock = smoothstep(32, 72, y) * 0.68;
   const rockMix = clamp(Math.max(slopeRock, heightRock), 0, 1);
   if (rockMix > 0.001) {
     out.lerp(rockTone, rockMix * 0.92);
   }
 
-  const peakMix = smoothstep(46, 92, y);
+  // Sun-bleached granite crests on the highest Alpine peaks.
+  const peakMix = smoothstep(66, 112, y);
   if (peakMix > 0.001) {
-    out.lerp(cWarmPeak, peakMix * 0.55);
+    out.lerp(cWarmPeak, peakMix * 0.52);
+  }
+
+  // --- West Coast Golden Sandy Beach & Wet Tidal Sand ---
+  const coastDist = x - shorelineXAtZ(z);
+  if (coastDist < 58 && y < 6.5) {
+    const sandMix = (1 - smoothstep(14, 58, coastDist)) * (1 - smoothstep(2.0, 6.5, y));
+    const cGoldenSand = _c10.setHex(0xd4be92);
+    const cWetSand = _c11.setHex(0x8a795c);
+    const wet = 1 - smoothstep(OCEAN_LEVEL + 0.2, OCEAN_LEVEL + 2.6, y);
+    cGoldenSand.lerp(cWetSand, wet * 0.85);
+    out.lerp(cGoldenSand, clamp(sandMix, 0, 1));
   }
 }
-
-const _c1 = new THREE.Color();
-const _c2 = new THREE.Color();
-const _c3 = new THREE.Color();
-const _c4 = new THREE.Color();
-const _c5 = new THREE.Color();
-const _c6 = new THREE.Color();
-const _c7 = new THREE.Color();
-const _c8 = new THREE.Color();
-const _c9 = new THREE.Color();
 
 /**
  * Adds dual-scale rotated detail sampling to eliminate visible texture tiling across wide hills.
@@ -175,14 +300,14 @@ function enableDualScaleTerrainMaterial(material: THREE.MeshStandardMaterial): v
 }
 
 /**
- * Builds a purely visual outer distant mountain range ring (from 585m out to 1080m) using a
- * lightweight vertex-colored Lambert material (zero normal/roughness/shadow sampling in the haze).
+ * Builds a purely visual outer distant mountain amphitheater (North, East & South horizons,
+ * dipping below sea level on the West so the Pacific Ocean stretches unobstructed to the horizon!).
  */
 function buildDistantMountainRing(material: THREE.Material): THREE.Mesh {
   const radialSegs = 96;
   const ringSegs = 5;
-  const innerHalf = WORLD_HALF - 14;
-  const outerHalf = 1080;
+  const innerHalf = WORLD_HALF - 18;
+  const outerHalf = 2150;
 
   const rings = ringSegs + 1;
   const cols = radialSegs + 1;
@@ -208,16 +333,20 @@ function buildDistantMountainRing(material: THREE.Material): THREE.Mesh {
       const x = lerp(sqX, circX, morph);
       const z = lerp(sqZ, circZ, morph);
 
+      // Keep the western ocean horizon (dx < -0.35) cleanly submerged beneath the Pacific Ocean plane!
+      const oceanOpen = smoothstep(-0.22, -0.58, dx);
+
       let y: number;
       if (r === 0) {
-        y = baseScenicHeight(x, z) - 1.2;
+        y = baseScenicHeight(x, z) - 1.8;
       } else {
-        const ridge1 = ridgedFbm(x * 0.0019 + 3.2, z * 0.0019 - 2.1, 4);
-        const ridge2 = ridgedFbm(x * 0.0042 - 5.4, z * 0.0042 + 4.8, 3);
+        const ridge1 = ridgedFbm(x * 0.0012 + 3.2, z * 0.0012 - 2.1, 4);
+        const ridge2 = ridgedFbm(x * 0.0028 - 5.4, z * 0.0028 + 4.8, 3);
         const crestEnvelope = Math.sin(t * Math.PI * 0.85);
         const baseEdge = baseScenicHeight(sqX, sqZ);
-        y = lerp(baseEdge, 18 + ridge1 * 128 + ridge2 * 36, smoothstep(0.0, 0.35, t)) * (0.55 + crestEnvelope * 0.65);
-        if (r === rings - 1) y = Math.min(y, 12);
+        const landPeak = lerp(baseEdge, 28 + ridge1 * 195 + ridge2 * 48, smoothstep(0.0, 0.35, t)) * (0.55 + crestEnvelope * 0.68);
+        y = lerp(landPeak, -14, oceanOpen);
+        if (r === rings - 1) y = Math.min(y, 14);
       }
 
       const vi = r * cols + s;
@@ -256,7 +385,6 @@ function buildDistantMountainRing(material: THREE.Material): THREE.Mesh {
     const z = positions[i * 3 + 2];
     const slope = 1 - clamp(Math.abs(normAttr.getY(i)), 0, 1);
     evaluateCaliforniaBiomeColor(x, y, z, slope, 0, tmp);
-    // Match neutral terrainDetail luminance (~0.88) so the stitch line to the main terrain is invisible.
     colors[i * 3] = tmp.r * 0.88;
     colors[i * 3 + 1] = tmp.g * 0.88;
     colors[i * 3 + 2] = tmp.b * 0.88;
@@ -273,9 +401,9 @@ function buildDistantMountainRing(material: THREE.Material): THREE.Mesh {
 }
 
 export interface TerrainData {
-  /** Primary drivable 1200x1200m terrain container (16 frustum-cullable seamless tiles). */
+  /** Primary drivable 2400x2400m terrain container (36 frustum-cullable seamless tiles). */
   mesh: THREE.Object3D;
-  /** Purely visual outer mountain range ring extending to the horizon (zero physics cost). */
+  /** Purely visual outer mountain amphitheater extending to the horizon (zero physics cost). */
   distantMesh: THREE.Mesh;
   /** All owned terrain tile geometries (for disposal). */
   geometries: THREE.BufferGeometry[];
@@ -299,8 +427,8 @@ export interface TerrainData {
 }
 
 /**
- * Builds the 1200x1200m sculpted California coastal valley terrain partitioned into 4x4 seamless
- * frustum-cullable tiles, plus the distant horizon mountain ring and exact physics heightfield grid.
+ * Builds the 2400x2400m sculpted 6-biome California terrain partitioned into 6x6 (36) seamless
+ * frustum-cullable tiles, plus the distant horizon mountain amphitheater and exact physics heightfield grid.
  */
 export function buildTerrain(network: RoadNetwork, textures: WorldTextures): TerrainData {
   const segs = TERRAIN_SEGMENTS;
@@ -332,8 +460,7 @@ export function buildTerrain(network: RoadNetwork, textures: WorldTextures): Ter
     }
   }
 
-  // Compute seamless smooth normals across the entire 161x161 grid BEFORE splitting into tiles
-  // so tile edges never show lighting seams.
+  // Compute seamless smooth normals across the entire 205x205 grid BEFORE splitting into 36 tiles.
   const fullNormals = new Float32Array(totalVerts * 3);
   const fullColors = new Float32Array(totalVerts * 3);
   const tmpColor = new THREE.Color();
@@ -384,12 +511,12 @@ export function buildTerrain(network: RoadNetwork, textures: WorldTextures): Ter
   });
   enableDualScaleTerrainMaterial(material);
 
-  // Split visual terrain into 4x4 seamless frustum-cullable tiles (~65% of terrain culled behind camera!).
+  // Split visual terrain into 6x6 (36) seamless frustum-cullable tiles (~75% of terrain culled behind camera!).
   const tileSegs = segs / TERRAIN_TILE_GRID;
   const tileVertsPerSide = tileSegs + 1;
   const tileVertCount = tileVertsPerSide * tileVertsPerSide;
 
-  // Shared index buffer layout for every 40x40 tile (Uint16 fits 41*41 = 1681 verts easily).
+  // Shared index buffer layout for every 34x34 tile (Uint16 fits 35*35 = 1225 verts easily).
   const tileIndexTemplate = new Uint16Array(tileSegs * tileSegs * 6);
   let iPtr = 0;
   for (let lz = 0; lz < tileSegs; lz++) {
@@ -398,7 +525,6 @@ export function buildTerrain(network: RoadNetwork, textures: WorldTextures): Ter
       const b = a + 1;
       const c = a + tileVertsPerSide;
       const d = c + 1;
-      // Verified +Y upward CCW winding: (c - a) x (b - a) = (+Z) x (+X) = +Y.
       tileIndexTemplate[iPtr++] = a;
       tileIndexTemplate[iPtr++] = c;
       tileIndexTemplate[iPtr++] = b;
@@ -441,8 +567,8 @@ export function buildTerrain(network: RoadNetwork, textures: WorldTextures): Ter
           normals[lIdx * 3 + 1] = fullNormals[gIdx * 3 + 1];
           normals[lIdx * 3 + 2] = fullNormals[gIdx * 3 + 2];
 
-          uvs[lIdx * 2] = x / 16;
-          uvs[lIdx * 2 + 1] = z / 16;
+          uvs[lIdx * 2] = x / 18;
+          uvs[lIdx * 2 + 1] = z / 18;
 
           colors[lIdx * 3] = fullColors[gIdx * 3];
           colors[lIdx * 3 + 1] = fullColors[gIdx * 3 + 1];
@@ -469,7 +595,6 @@ export function buildTerrain(network: RoadNetwork, textures: WorldTextures): Ter
     }
   }
 
-  // Lightweight non-shadowed Lambert material for distant horizon mountains in aerial perspective fog.
   const distantMaterial = new THREE.MeshLambertMaterial({
     name: 'world-distant-mountains',
     vertexColors: true,

@@ -594,6 +594,13 @@ export class GarageEngine {
     this.store.set({ drive: this.driveSession.getSnapshot() });
   }
 
+  /** Toggles dedicated free-orbit/pan/zoom Damage Inspection camera (`V` / `L3`). */
+  toggleDriveInspect(): void {
+    if (!this.driveSession || this.store.get().screen !== 'drive') return;
+    this.driveSession.toggleInspect();
+    this.store.set({ drive: this.driveSession.getSnapshot() });
+  }
+
   /** Toggles headlights & taillights during Open-World Drive Mode. */
   toggleDriveLights(): void {
     if (!this.driveSession || this.store.get().screen !== 'drive') return;

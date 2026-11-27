@@ -4,6 +4,9 @@ import type { Vec3 } from '@blend-garage/vehicle-core';
 import type {
   AudioSurfaceType,
   DrivingWorldSimLike,
+  DynamicPropKind,
+  DynamicPropTransform,
+  DynamicWorldPropDef,
   PhysicsAdvanceResult,
   PhysicsImpactRecord,
   PhysicsStepResult,
@@ -11,10 +14,12 @@ import type {
   ShiftDirection,
   TransmissionMode,
   VehicleControlInput,
+  VehicleMechanicalHealth,
   VehiclePhysicsConfig,
   VehiclePhysicsState,
   WheelPhysicsConfig,
   WheelPhysicsState,
+  WheelStructuralDamage,
   WorldColliderDef,
   WorldSurfaceType,
 } from './types.js';
@@ -22,7 +27,7 @@ import type {
 const GRAVITY = 9.81;
 const MS_TO_KMH = 3.6;
 const MS_TO_MPH = 2.236936292;
-const DEFAULT_GEAR_RATIOS = [3.45, 2.28, 1.65, 1.26, 0.99, 0.79];
+const DEFAULT_GEAR_RATIOS = [3.42, 2.24, 1.60, 1.20, 0.94, 0.74];
 
 const SURFACE_GRIP_MULT: Record<WorldSurfaceType, number> = {
   asphalt: 1.0,
@@ -177,6 +182,35 @@ interface ColliderMeta {
   id?: string;
   tag?: string;
   surface: WorldSurfaceType;
+  isDynamicProp?: boolean;
+  dynamicPropKind?: DynamicPropKind;
+  dynamicPropMass?: number;
+  dynamicPropBody?: RAPIER.RigidBody;
+}
+
+interface DynamicPropRuntime {
+  def: DynamicWorldPropDef;
+  body: RAPIER.RigidBody;
+  collider: RAPIER.Collider;
+  spawnPos: Vec3;
+  spawnQuat: Quat;
+  syncedSleeping: boolean;
+}
+
+function defaultWheelStructuralDamage(): [
+  WheelStructuralDamage,
+  WheelStructuralDamage,
+  WheelStructuralDamage,
+  WheelStructuralDamage,
+] {
+  const clean = (): WheelStructuralDamage => ({
+    integrity: 1,
+    camberRad: 0,
+    toeRad: 0,
+    wobbleRad: 0,
+    collapsed: 0,
+  });
+  return [clean(), clean(), clean(), clean()];
 }
 
 interface WheelRuntime {
@@ -252,6 +286,8 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
   private readonly lastImpactTimeByCollider = new Map<number, number>();
   private readonly activeContacts = new Set<number>();
   private readonly contactSnapshots = new Map<number, { localPoint: Vec3; localNormalInward: Vec3 }>();
+  private readonly dynamicProps: DynamicPropRuntime[] = [];
+  private readonly dynamicPropTransforms: DynamicPropTransform[] = [];
   private readonly wheels: [WheelRuntime, WheelRuntime, WheelRuntime, WheelRuntime];
 
   private readonly config: Required<
@@ -284,6 +320,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
 
   private readonly chassisColliderOffsetY: number;
   private readonly chassisHalfExtents: Vec3;
+  private readonly chassisComLocal: Vec3;
   private readonly drivenWheelCount: number;
   private readonly avgWheelRadius: number;
   private readonly prevPose: PoseSnapshot;
@@ -303,10 +340,23 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
   private scrapeIntensity = 0;
   private advanceAccumulator = 0;
   private simTime = 0;
+  private prevGroundedWheels = 4;
+  private airborneTime = 0;
+  private peakFallSpeed = 0;
   private health: MechanicalHealth = defaultMechanicalHealth();
+  private wheelDamage: [
+    WheelStructuralDamage,
+    WheelStructuralDamage,
+    WheelStructuralDamage,
+    WheelStructuralDamage,
+  ] = defaultWheelStructuralDamage();
   private disposed = false;
 
-  private constructor(vehicleConfig: VehiclePhysicsConfig, colliders: WorldColliderDef[]) {
+  private constructor(
+    vehicleConfig: VehiclePhysicsConfig,
+    colliders: WorldColliderDef[],
+    dynamicProps?: readonly DynamicWorldPropDef[],
+  ) {
     this.config = {
       massKg: vehicleConfig.massKg,
       chassisSize: vehicleConfig.chassisSize,
@@ -357,7 +407,8 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     this.chassisHalfExtents = [hx + borderRadius, hy + borderRadius, hz + borderRadius];
     this.chassisColliderOffsetY = groundClearance + hy + borderRadius;
 
-    const com = vehicleConfig.centerOfMassOffset ?? [0, clamp(height * 0.31, 0.36, 0.54), 0.04];
+    const com: Vec3 = vehicleConfig.centerOfMassOffset ?? [0, clamp(height * 0.31, 0.36, 0.54), 0.04];
+    this.chassisComLocal = [com[0], com[1], com[2]];
     const m = this.config.massKg;
     const ix = (1 / 12) * m * (height * height + length * length) * 0.88;
     const iy = (1 / 12) * m * (width * width + length * length) * 0.96;
@@ -371,11 +422,13 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       .setRotation({ x: spawnQuat[0], y: spawnQuat[1], z: spawnQuat[2], w: spawnQuat[3] })
       .setCanSleep(false)
       .setCcdEnabled(true)
-      .setLinearDamping(0.06)
-      .setAngularDamping(0.35);
+      .setLinearDamping(0.05)
+      .setAngularDamping(0.32);
 
     this.chassisBody = this.world.createRigidBody(bodyDesc);
 
+    // Low restitution + Min combine rule eliminates "rubber brick" wall bouncing so crashes
+    // crunch in and absorb kinetic energy realistically.
     const chassisColliderDesc = RAPIER.ColliderDesc.roundCuboid(hx, hy, hz, borderRadius)
       .setTranslation(0, this.chassisColliderOffsetY, 0)
       .setMassProperties(
@@ -384,8 +437,9 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
         { x: ix, y: iy, z: iz },
         { x: 0, y: 0, z: 0, w: 1 },
       )
-      .setFriction(0.35)
-      .setRestitution(0.14)
+      .setFriction(0.48)
+      .setRestitution(0.06)
+      .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min)
       .setActiveEvents(
         RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS | RAPIER.ActiveEvents.COLLISION_EVENTS,
       )
@@ -450,19 +504,25 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       this.wheels.reduce((sum, w) => sum + w.cfg.radius, 0) / this.wheels.length;
     this.prevPose = createPoseSnapshot(spawnPos, spawnQuat);
     this.currPose = createPoseSnapshot(spawnPos, spawnQuat);
+
+    if (dynamicProps && dynamicProps.length > 0) {
+      this.addDynamicProps(dynamicProps);
+    }
+
     this.world.propagateModifiedBodyPositionsToColliders();
     this.world.updateSceneQueries();
     this.captureCurrentPose();
     copyPoseSnapshot(this.currPose, this.prevPose);
   }
 
-  /** Creates a new physics world with initialized Rapier3D WASM, vehicle controller, and static colliders. */
+  /** Creates a new physics world with initialized Rapier3D WASM, vehicle controller, static colliders, and optional dynamic props. */
   static async create(
     vehicle: VehiclePhysicsConfig,
     colliders: WorldColliderDef[],
+    dynamicProps?: readonly DynamicWorldPropDef[],
   ): Promise<DrivingWorldSim> {
     await initPhysicsEngine();
-    return new DrivingWorldSim(vehicle, colliders);
+    return new DrivingWorldSim(vehicle, colliders, dynamicProps);
   }
 
   addColliders(colliders: WorldColliderDef[]): void {
@@ -471,7 +531,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       const desc = this.buildColliderDesc(def);
       if (!desc) continue;
       desc.setFriction(def.friction ?? 0.85);
-      desc.setRestitution(def.restitution ?? 0.1);
+      desc.setRestitution(def.restitution ?? 0.08);
       const collider = this.world.createCollider(desc);
       this.colliderMeta.set(collider.handle, {
         id: def.id,
@@ -482,7 +542,123 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     this.world.updateSceneQueries();
   }
 
-  setMechanicalHealth(health: MechanicalHealth): void {
+  /**
+   * Spawns knockable dynamic rigid-body props (barrels, crates, barriers, cones, tire stacks)
+   * initially asleep for near-zero idle CPU cost; they wake and tumble automatically on impact.
+   */
+  addDynamicProps(props: readonly DynamicWorldPropDef[]): void {
+    this.assertNotDisposed();
+    for (const def of props) {
+      const q = headingToQuat(def.rotationY ?? 0);
+      const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(def.position[0], def.position[1], def.position[2])
+        .setRotation({ x: q[0], y: q[1], z: q[2], w: q[3] })
+        .setCanSleep(true)
+        .setSleeping(true)
+        .setLinearDamping(0.32)
+        .setAngularDamping(0.42);
+      const body = this.world.createRigidBody(bodyDesc);
+
+      const colliderDesc =
+        def.shape === 'cylinder'
+          ? RAPIER.ColliderDesc.cylinder(
+              Math.max(0.05, def.halfExtents[1]),
+              Math.max(0.05, def.halfExtents[0]),
+            )
+          : RAPIER.ColliderDesc.cuboid(
+              Math.max(0.05, def.halfExtents[0]),
+              Math.max(0.05, def.halfExtents[1]),
+              Math.max(0.05, def.halfExtents[2]),
+            );
+
+      colliderDesc
+        .setMass(Math.max(1, def.mass))
+        .setFriction(def.friction ?? 0.62)
+        .setRestitution(def.restitution ?? 0.22);
+
+      const collider = this.world.createCollider(colliderDesc, body);
+      const surface: WorldSurfaceType =
+        def.kind === 'crate'
+          ? 'wood'
+          : def.kind === 'barrier'
+            ? 'concrete'
+            : def.kind === 'barrel'
+              ? 'metal'
+              : 'asphalt';
+
+      this.colliderMeta.set(collider.handle, {
+        id: def.id,
+        tag: `prop:${def.kind}`,
+        surface,
+        isDynamicProp: true,
+        dynamicPropKind: def.kind,
+        dynamicPropMass: Math.max(1, def.mass),
+        dynamicPropBody: body,
+      });
+
+      const spawnPos: Vec3 = [def.position[0], def.position[1], def.position[2]];
+      const spawnQuat: Quat = [q[0], q[1], q[2], q[3]];
+      this.dynamicProps.push({
+        def,
+        body,
+        collider,
+        spawnPos,
+        spawnQuat,
+        syncedSleeping: true,
+      });
+      this.dynamicPropTransforms.push({
+        id: def.id,
+        position: [spawnPos[0], spawnPos[1], spawnPos[2]],
+        quaternion: [spawnQuat[0], spawnQuat[1], spawnQuat[2], spawnQuat[3]],
+        sleeping: true,
+      });
+    }
+    this.world.updateSceneQueries();
+  }
+
+  /** Restores every dynamic prop to its original resting spawn pose and puts it back to sleep. */
+  resetDynamicProps(): void {
+    this.assertNotDisposed();
+    for (let i = 0; i < this.dynamicProps.length; i++) {
+      const prop = this.dynamicProps[i];
+      prop.body.setTranslation(
+        { x: prop.spawnPos[0], y: prop.spawnPos[1], z: prop.spawnPos[2] },
+        false,
+      );
+      prop.body.setRotation(
+        { x: prop.spawnQuat[0], y: prop.spawnQuat[1], z: prop.spawnQuat[2], w: prop.spawnQuat[3] },
+        false,
+      );
+      prop.body.setLinvel({ x: 0, y: 0, z: 0 }, false);
+      prop.body.setAngvel({ x: 0, y: 0, z: 0 }, false);
+      prop.body.resetForces(false);
+      prop.body.resetTorques(false);
+      prop.body.sleep();
+      prop.syncedSleeping = true;
+
+      const out = this.dynamicPropTransforms[i];
+      out.position[0] = prop.spawnPos[0];
+      out.position[1] = prop.spawnPos[1];
+      out.position[2] = prop.spawnPos[2];
+      out.quaternion[0] = prop.spawnQuat[0];
+      out.quaternion[1] = prop.spawnQuat[1];
+      out.quaternion[2] = prop.spawnQuat[2];
+      out.quaternion[3] = prop.spawnQuat[3];
+      out.sleeping = true;
+    }
+    this.world.propagateModifiedBodyPositionsToColliders();
+    this.world.updateSceneQueries();
+  }
+
+  /**
+   * Returns live world-space transforms of all dynamic knockable props in a zero-allocation
+   * reusable buffer (safe to pass directly to `OpenWorld.syncDynamicProps()`).
+   */
+  getDynamicPropTransforms(): readonly DynamicPropTransform[] {
+    return this.dynamicPropTransforms;
+  }
+
+  setMechanicalHealth(health: VehicleMechanicalHealth): void {
     this.health = {
       chassisIntegrity: clamp(health.chassisIntegrity, 0, 1),
       engineHealth: clamp(health.engineHealth, 0, 1),
@@ -496,6 +672,27 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       headlightsIntact: health.headlightsIntact,
       taillightsIntact: health.taillightsIntact,
     };
+
+    const incoming = health.wheelDamage;
+    for (let i = 0; i < 4; i++) {
+      const wd = incoming?.[i];
+      const integrity = wd ? clamp(wd.integrity, 0, 1) : this.health.wheelIntegrity[i];
+      const collapsed = wd ? clamp(wd.collapsed, 0, 1) : clamp((0.6 - integrity) / 0.6, 0, 1) * 0.65;
+      this.wheelDamage[i] = {
+        integrity,
+        camberRad: wd ? clamp(wd.camberRad, -0.45, 0.45) : 0,
+        toeRad: wd ? clamp(wd.toeRad, -0.35, 0.35) : 0,
+        wobbleRad: wd ? clamp(wd.wobbleRad, 0, 0.35) : (integrity < 0.98 ? (1 - integrity) * 0.14 : 0),
+        collapsed,
+      };
+
+      // Collapse damaged corner suspension & soften spring so smashed corners visibly droop and sag.
+      const w = this.wheels[i];
+      const effectiveRest = w.restLength * (1 - collapsed * 0.42);
+      const effectiveStiff = this.config.suspensionStiffness * (1 - collapsed * 0.35);
+      this.vehicle.setWheelSuspensionRestLength(i, effectiveRest);
+      this.vehicle.setWheelSuspensionStiffness(i, effectiveStiff);
+    }
   }
 
   setTransmissionMode(mode: TransmissionMode): void {
@@ -527,6 +724,9 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     this.turboBoost = 0;
     this.scrapeIntensity = 0;
     this.advanceAccumulator = 0;
+    this.airborneTime = 0;
+    this.peakFallSpeed = 0;
+    this.prevGroundedWheels = 4;
     this.lastImpactTimeByCollider.clear();
     this.activeContacts.clear();
     this.contactSnapshots.clear();
@@ -679,17 +879,18 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       const w = this.wheels[i];
       const isFront = w.cfg.steerable;
       const wheelHealth = this.health.wheelIntegrity[i];
+      const wd = this.wheelDamage[i];
       const groundCollider = this.vehicle.wheelGroundObject(i);
       const surface = (groundCollider ? this.colliderMeta.get(groundCollider.handle)?.surface : undefined) ?? 'asphalt';
       w.cachedSurface = surface;
       const surfaceMult = SURFACE_GRIP_MULT[surface];
 
-      // Steering (Ackermann-style slight inner-wheel bias on front axle)
+      // Steering (Ackermann-style slight inner-wheel bias on front axle + bent toe damage)
       let wheelSteer = 0;
       if (isFront) {
         const isLeft = w.cfg.corner === 'FL';
         const innerBias = (targetSteerRad > 0 && isLeft) || (targetSteerRad < 0 && !isLeft) ? 1.06 : 0.95;
-        wheelSteer = targetSteerRad * innerBias;
+        wheelSteer = targetSteerRad * innerBias + wd.toeRad * 0.45;
       }
       w.steerAngleRad = wheelSteer;
       this.vehicle.setWheelSteering(i, wheelSteer);
@@ -705,17 +906,20 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       }
       this.vehicle.setWheelEngineForce(i, wheelDrive);
 
-      // Braking + handbrake + damaged wheel drag
+      // Braking + handbrake + damaged wheel/collapsed corner scrub drag
       const frontBrakeBias = isFront ? 1.15 : 0.85;
       const handbrakeForce = handbrake && !isFront ? this.config.maxBrakeForce * 1.45 : 0;
-      const damageDrag = wheelHealth < 0.75 ? (0.75 - wheelHealth) * 26 : 0;
+      const damageDrag =
+        (wheelHealth < 0.75 ? (0.75 - wheelHealth) * 26 : 0)
+        + wd.collapsed * 22
+        + Math.abs(wd.toeRad) * 18;
       const engineBraking =
         throttle < 0.04 && brake < 0.04 && Math.abs(forwardSpeedMs) > 0.6 ? 2.6 : 0;
       const totalBrake = Math.max(serviceBrakeForce * frontBrakeBias, handbrakeForce) + damageDrag + engineBraking;
       this.vehicle.setWheelBrake(i, totalBrake);
 
       // Tire grip & handbrake drift modulation
-      const damageGrip = 0.55 + 0.45 * wheelHealth;
+      const damageGrip = 0.52 + 0.48 * wheelHealth * (1 - wd.collapsed * 0.25);
       const driftFrictionMult = handbrake && !isFront ? 0.42 : 1.0;
       const driftSideMult = handbrake && !isFront ? 0.30 : 1.0;
       this.vehicle.setWheelFrictionSlip(
@@ -742,9 +946,12 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     this.updateWheelKinematics(dt, forwardSpeedMs, lateralSpeedMs, throttle, brake, handbrake);
 
     // 7. Drain rigid-body collision/contact-force events into exact DamageBridge ImpactEvents
+    //    plus visceral plastic energy absorption, off-center crash torque, and hard-landing impacts.
     const impacts = this.collectImpactEvents(dt, preVelVec);
+    this.detectHardLanding(dt, impacts);
 
-    // 8. Update continuous sliding scrape telemetry & snapshot post-step visual pose
+    // 8. Sync awake dynamic prop transforms (zero-allocation), scrape telemetry, & visual pose
+    this.syncDynamicPropTransforms();
     this.updateScrapeIntensity(dt, absSpeedMs);
     this.captureCurrentPose();
 
@@ -765,6 +972,72 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
    */
   getInterpolatedState(alpha: number): VehiclePhysicsState {
     return this.buildState(clamp(alpha, 0, 1));
+  }
+
+  private syncDynamicPropTransforms(): void {
+    const count = this.dynamicProps.length;
+    if (count === 0) return;
+    for (let i = 0; i < count; i++) {
+      const prop = this.dynamicProps[i];
+      const sleeping = prop.body.isSleeping();
+      if (sleeping && prop.syncedSleeping) continue;
+      const t = prop.body.translation();
+      const r = prop.body.rotation();
+      const out = this.dynamicPropTransforms[i];
+      out.position[0] = t.x;
+      out.position[1] = t.y;
+      out.position[2] = t.z;
+      out.quaternion[0] = r.x;
+      out.quaternion[1] = r.y;
+      out.quaternion[2] = r.z;
+      out.quaternion[3] = r.w;
+      out.sleeping = sleeping;
+      prop.syncedSleeping = sleeping;
+    }
+  }
+
+  private detectHardLanding(dt: number, impacts: PhysicsImpactRecord[]): void {
+    let grounded = 0;
+    for (let i = 0; i < 4; i++) {
+      if (this.vehicle.wheelIsInContact(i)) grounded += 1;
+    }
+
+    if (grounded === 0) {
+      this.airborneTime += dt;
+      const vy = this.chassisBody.linvel().y;
+      if (-vy > this.peakFallSpeed) this.peakFallSpeed = -vy;
+    } else {
+      if (this.prevGroundedWheels === 0 && this.airborneTime > 0.28 && this.peakFallSpeed > 6.5) {
+        const fallSpeed = this.peakFallSpeed;
+        const impulse = this.config.massKg * fallSpeed * 0.62;
+        const gForce = clamp(impulse / (this.config.massKg * GRAVITY * 0.04), 1.5, 45);
+        const bodyPos = this.chassisBody.translation();
+        const bodyRot = this.chassisBody.rotation();
+        const bodyQuat: Quat = [bodyRot.x, bodyRot.y, bodyRot.z, bodyRot.w];
+        const localPoint: Vec3 = [0, 0.24, 0.25];
+        const localNormal: Vec3 = [0, 1, 0];
+        const rotPt = rotateVecByQuat(localPoint, bodyQuat);
+        const worldNormal = normalizeVec3(rotateVecByQuat(localNormal, bodyQuat), [0, 1, 0]);
+
+        impacts.push({
+          event: {
+            localPoint,
+            localNormal,
+            impulse,
+            relativeSpeed: fallSpeed,
+          },
+          worldPoint: [bodyPos.x + rotPt[0], bodyPos.y + rotPt[1], bodyPos.z + rotPt[2]],
+          worldNormal,
+          gForce,
+          colliderId: 'hard-landing',
+          colliderTag: 'landing',
+        });
+      }
+      this.airborneTime = 0;
+      this.peakFallSpeed = 0;
+    }
+
+    this.prevGroundedWheels = grounded;
   }
 
   private captureCurrentPose(): void {
@@ -923,6 +1196,8 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
         angularVelocityRad: w.angularVelocityRad,
         slipRatio: w.slipRatio,
         wobbleRad,
+        camberDamageRad: this.wheelDamage[i].camberRad,
+        toeDamageRad: this.wheelDamage[i].toeRad,
         contactPoint: cp ? [cp.x, cp.y, cp.z] : null,
         surface,
       };
@@ -968,6 +1243,8 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     this.lastImpactTimeByCollider.clear();
     this.activeContacts.clear();
     this.contactSnapshots.clear();
+    this.dynamicProps.length = 0;
+    this.dynamicPropTransforms.length = 0;
     this.eventQueue.free();
     this.world.free();
   }
@@ -1186,8 +1463,8 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     const speed = Math.sqrt(speedSq);
 
     if (speed > 0.2) {
-      // Aerodynamic drag + tire rolling resistance
-      const dragMag = 0.5 * 1.225 * 0.70 * speedSq + 0.014 * this.config.massKg * GRAVITY;
+      // Aerodynamic drag (tuned so supercars reach ~280-320 km/h on the 1.4 km expressway) + rolling resistance
+      const dragMag = 0.5 * 1.225 * 0.58 * speedSq + 0.013 * this.config.massKg * GRAVITY;
       const invS = 1 / speed;
       this.chassisBody.addForce(
         {
@@ -1199,7 +1476,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       );
 
       // Subtle aerodynamic downforce at speed for planted highway handling
-      const downforce = 0.5 * 1.225 * 0.38 * forwardSpeedMs * forwardSpeedMs;
+      const downforce = 0.5 * 1.225 * 0.40 * forwardSpeedMs * forwardSpeedMs;
       const localDown = rotateVecByQuat([0, -Math.min(downforce, this.config.massKg * 4.5), 0], preQuat);
       this.chassisBody.addForce({ x: localDown[0], y: localDown[1], z: localDown[2] }, true);
     }
@@ -1235,6 +1512,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       const isRear = !w.cfg.steerable;
       const inContact = this.vehicle.wheelIsInContact(i);
       const wheelHealth = this.health.wheelIntegrity[i];
+      const wd = this.wheelDamage[i];
 
       let angVel = forwardSpeedMs / w.cfg.radius;
       if (handbrake && isRear) {
@@ -1259,11 +1537,12 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       }
       w.slipRatio = slip;
 
-      // Wheel wobble from corner damage
-      w.wobbleRad =
-        wheelHealth < 0.98
-          ? (1 - wheelHealth) * 0.14 * Math.sin(w.spinAngleRad)
-          : 0;
+      // Wheel wobble from structural damage or wheel integrity loss
+      const wobbleAmp = Math.max(
+        wd.wobbleRad,
+        wheelHealth < 0.98 ? (1 - wheelHealth) * 0.14 : 0,
+      );
+      w.wobbleRad = wobbleAmp > 1e-4 ? wobbleAmp * Math.sin(w.spinAngleRad) : 0;
     }
   }
 
@@ -1276,6 +1555,7 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
     const bodyPos = this.chassisBody.translation();
     const bodyRot = this.chassisBody.rotation();
     const bodyQuat: Quat = [bodyRot.x, bodyRot.y, bodyRot.z, bodyRot.w];
+    const preSpeed = Math.hypot(preVel[0], preVel[1], preVel[2]);
 
     const records: PhysicsImpactRecord[] = [];
     const seenOther = new Set<number>();
@@ -1295,8 +1575,17 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
 
       const meta = this.colliderMeta.get(otherHandle);
       const isDrivableGround = meta?.tag ? DRIVABLE_TAGS.has(meta.tag) : false;
+      const isDynamicProp = Boolean(meta?.isDynamicProp);
+      const propMass = meta?.dynamicPropMass ?? 0;
 
-      const bodyImpulse = bodyDeltaV * this.config.massKg;
+      // For dynamic props (barrels, crates, cones, barriers), scale impulse by effective reduced mass
+      // so hitting a 6kg cone doesn't register like a solid concrete wall, while heavy barriers still hit hard!
+      const reducedMass = isDynamicProp
+        ? (this.config.massKg * propMass) / Math.max(1, this.config.massKg + propMass)
+        : this.config.massKg;
+      const bodyImpulse = isDynamicProp
+        ? Math.max(bodyDeltaV * this.config.massKg, preSpeed * reducedMass * 1.15)
+        : bodyDeltaV * this.config.massKg;
       const impulse = Math.max(forceImpulse, bodyImpulse * 0.85);
 
       // Inspect exact contact manifold for contact point & normal
@@ -1336,7 +1625,9 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
         });
       }
 
-      const finalImpulse = Math.max(impulse, manifoldImpulse);
+      const finalImpulse = isDynamicProp
+        ? Math.min(Math.max(impulse, manifoldImpulse), preSpeed * reducedMass * 1.85 + 250)
+        : Math.max(impulse, manifoldImpulse);
 
       // If the bodies bounced apart on this exact step, fall back to the contact manifold snapshotted
       // when contact began on the previous step.
@@ -1376,19 +1667,54 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
       );
       const relativeSpeed = isDrivableGround
         ? Math.max(0, closingAlongNormal)
-        : Math.max(
-            Math.abs(closingAlongNormal),
-            bodyDeltaV,
-            finalImpulse / this.config.massKg,
-          );
+        : isDynamicProp
+          ? Math.max(Math.abs(closingAlongNormal), preSpeed * 0.85)
+          : Math.max(
+              Math.abs(closingAlongNormal),
+              bodyDeltaV,
+              finalImpulse / this.config.massKg,
+            );
 
-      // Ignore gentle scrapes and normal ground/ramp contact unless it's a heavy slam
+      // Give knocked dynamic props an energetic scatter & tumble kick on hit so barrels/crates/cones
+      // fly cleanly instead of wedging under the bumper!
+      if (isDynamicProp && meta?.dynamicPropBody && relativeSpeed > 2.5) {
+        const propBody = meta.dynamicPropBody;
+        propBody.wakeUp();
+        const launchSpeed = clamp(relativeSpeed * 0.65, 2.5, 22);
+        const massScale = clamp(propMass, 4, 260);
+        const kickFactor = propMass <= 180 ? 0.55 : 0.25;
+        const outwardX = -worldNormal[0];
+        const outwardZ = -worldNormal[2];
+        propBody.applyImpulse(
+          {
+            x: (outwardX * launchSpeed + preVel[0] * 0.35) * massScale * kickFactor,
+            y: clamp(launchSpeed * 0.36, 1.4, 7.5) * massScale * kickFactor,
+            z: (outwardZ * launchSpeed + preVel[2] * 0.35) * massScale * kickFactor,
+          },
+          true,
+        );
+        propBody.applyTorqueImpulse(
+          {
+            x: (outwardZ * 0.6 + 0.35) * massScale * 0.22,
+            y: ((otherHandle % 3) - 1) * massScale * 0.18,
+            z: (-outwardX * 0.6) * massScale * 0.22,
+          },
+          true,
+        );
+      }
+
+      // Ignore gentle scrapes and normal ground/ramp contact unless it's a heavy slam.
+      // Dynamic props have a lower impulse floor so knocking over barrels/crates/barriers triggers sparks + sound.
       const minSpeed = isDrivableGround
         ? Math.max(8.5, this.config.impactSpeedThreshold * 3.5)
-        : this.config.impactSpeedThreshold;
+        : isDynamicProp
+          ? 2.8
+          : this.config.impactSpeedThreshold;
       const minImpulse = isDrivableGround
         ? this.config.impactImpulseThreshold * 3.2
-        : this.config.impactImpulseThreshold;
+        : isDynamicProp
+          ? 120
+          : this.config.impactImpulseThreshold;
 
       if (finalImpulse < minImpulse || relativeSpeed < minSpeed) {
         return;
@@ -1433,7 +1759,65 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
         bodyPos.z + rotLocalPt[2],
       ];
 
-      const gForce = clamp(finalImpulse / (this.config.massKg * GRAVITY * Math.max(dt, 1 / 60)), 0.5, 60);
+      // Visceral crash dynamics on solid static obstacle impacts:
+      // 1) Plastic crush absorption — damp excessive elastic bounce-back along inward normal so
+      //    smashing a wall crunches in and stops rather than bouncing off like rubber.
+      // 2) Off-center corner yaw spin + nose/rear pitch kick + side roll kick.
+      if (!isDynamicProp && !isDrivableGround && relativeSpeed > 4.5) {
+        const curV = this.chassisBody.linvel();
+        const reboundAlongNormal =
+          curV.x * finalWorldNormal[0]
+          + curV.y * finalWorldNormal[1]
+          + curV.z * finalWorldNormal[2];
+        if (reboundAlongNormal > 0.35) {
+          // Absorb ~60% of rebound velocity into sheet-metal deformation energy
+          const absorb = reboundAlongNormal * 0.62;
+          this.chassisBody.setLinvel(
+            {
+              x: curV.x - finalWorldNormal[0] * absorb,
+              y: curV.y - finalWorldNormal[1] * absorb * 0.5,
+              z: curV.z - finalWorldNormal[2] * absorb,
+            },
+            true,
+          );
+        }
+
+        // Physical lever arm r = localPoint - COM, torque impulse = r x J_inward
+        const rx = localPoint[0] - this.chassisComLocal[0];
+        const ry = localPoint[1] - this.chassisComLocal[1];
+        const rz = localPoint[2] - this.chassisComLocal[2];
+        const impactScale = clamp(finalImpulse / (this.config.massKg * 12), 0.15, 2.4);
+
+        // Cross product r x localNormalInward gives physically accurate spin direction
+        const crossX = ry * localNormalInward[2] - rz * localNormalInward[1];
+        const crossY = rz * localNormalInward[0] - rx * localNormalInward[2];
+        const crossZ = rx * localNormalInward[1] - ry * localNormalInward[0];
+
+        // Nose-on hit (localPoint.z > 0.7, inward -Z) kicks the tail up (+X pitch); rear hit (-Z) pitches nose up (-X)
+        const nosePitchKick =
+          Math.abs(localNormalInward[2]) > 0.5 && Math.abs(localPoint[2]) > 0.7
+            ? Math.sign(localPoint[2]) * 0.65 * impactScale
+            : 0;
+
+        // Glancing corner hits whip the car into a dramatic yaw spin; side hits add subtle roll kick
+        const localAngKick: Vec3 = [
+          clamp((crossX * 0.45 + nosePitchKick) * 1.15, -2.4, 2.4),
+          clamp(crossY * impactScale * 1.55, -3.6, 3.6),
+          clamp(crossZ * impactScale * 0.85, -1.8, 1.8),
+        ];
+        const worldAngKick = rotateVecByQuat(localAngKick, bodyQuat);
+        const curW = this.chassisBody.angvel();
+        this.chassisBody.setAngvel(
+          {
+            x: clamp(curW.x + worldAngKick[0], -5.5, 5.5),
+            y: clamp(curW.y + worldAngKick[1], -6.5, 6.5),
+            z: clamp(curW.z + worldAngKick[2], -5.0, 5.0),
+          },
+          true,
+        );
+      }
+
+      const gForce = clamp(finalImpulse / (this.config.massKg * GRAVITY * Math.max(dt, 1 / 60)), 0.4, 65);
       this.lastImpactTimeByCollider.set(otherHandle, this.simTime);
 
       const event: ImpactEvent = {
@@ -1450,6 +1834,8 @@ export class DrivingWorldSim implements DrivingWorldSimLike {
         gForce,
         colliderId: meta?.id,
         colliderTag: meta?.tag,
+        isDynamicProp: isDynamicProp || undefined,
+        dynamicPropKind: meta?.dynamicPropKind,
       });
     };
 

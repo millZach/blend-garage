@@ -4,6 +4,7 @@ import {
   DriveInputController,
   DrivingWorldSim,
   createVehiclePhysicsConfig,
+  type DynamicWorldPropDef,
   type GamepadLike,
   type VehicleControlInput,
   type WorldColliderDef,
@@ -407,10 +408,158 @@ describe('DrivingWorldSim (Rapier3D vehicle physics)', () => {
       sim.dispose();
     }
   });
+
+  it('delivers visceral low-bounce crashes, off-center corner spin torque, hard-landing impacts, and collapsed corner suspension', async () => {
+    const colliders: WorldColliderDef[] = [
+      ...flatRoadColliders,
+      {
+        type: 'box',
+        id: 'offset-pillar',
+        tag: 'wall',
+        surface: 'concrete',
+        // Offset to car's front-left (+X) so only the left nose catches it!
+        position: [0.85, 1.5, 22],
+        halfExtents: [0.65, 1.5, 0.8],
+      },
+    ];
+    const cfg = createVehiclePhysicsConfig(testManifest);
+    const sim = await DrivingWorldSim.create(cfg, colliders);
+    try {
+      stepMany(sim, 20, idleInput);
+      let impactStepState = null;
+      let preImpactSpeed = 0;
+      for (let i = 0; i < 180; i++) {
+        const prev = sim.getState();
+        const res = sim.step(1 / 60, { throttle: 1, brake: 0, steer: 0, handbrake: false });
+        if (res.impacts.length > 0) {
+          preImpactSpeed = prev.forwardSpeedMs;
+          impactStepState = res.state;
+          break;
+        }
+      }
+      expect(impactStepState).not.toBeNull();
+      // Plastic energy absorption: car must NOT bounce backward like a rubber brick!
+      expect(impactStepState!.forwardSpeedMs).toBeGreaterThan(-preImpactSpeed * 0.25);
+      // Off-center front-left hit must induce clear angular spin/pitch velocity
+      const angMag = Math.hypot(...impactStepState!.angularVelocity);
+      expect(angMag).toBeGreaterThan(0.35);
+
+      // Hard landing from a high drop emits a 'landing' ImpactEvent
+      sim.resetPose([0, 6.0, 0], 0);
+      let landingImpact = null;
+      for (let i = 0; i < 120; i++) {
+        const res = sim.step(1 / 60, idleInput);
+        const found = res.impacts.find((imp) => imp.colliderTag === 'landing');
+        if (found) {
+          landingImpact = found;
+          break;
+        }
+      }
+      expect(landingImpact).not.toBeNull();
+      expect(landingImpact!.event.localNormal[1]).toBeGreaterThan(0.8);
+      expect(landingImpact!.event.relativeSpeed).toBeGreaterThan(6.5);
+
+      // Structural wheel damage bends camber/toe and collapses damaged corner ride height
+      sim.resetPose([0, 0.1, 0], 0);
+      const healthySettled = stepMany(sim, 50, idleInput).state;
+      sim.setMechanicalHealth({
+        chassisIntegrity: 0.5,
+        engineHealth: 0.8,
+        steeringPull: 0.2,
+        wheelIntegrity: [0.15, 1, 1, 1],
+        headlightsIntact: true,
+        taillightsIntact: true,
+        wheelDamage: [
+          { integrity: 0.15, camberRad: -0.22, toeRad: 0.12, wobbleRad: 0.14, collapsed: 0.9 },
+          { integrity: 1, camberRad: 0, toeRad: 0, wobbleRad: 0, collapsed: 0 },
+          { integrity: 1, camberRad: 0, toeRad: 0, wobbleRad: 0, collapsed: 0 },
+          { integrity: 1, camberRad: 0, toeRad: 0, wobbleRad: 0, collapsed: 0 },
+        ],
+      });
+      const collapsedSettled = stepMany(sim, 50, idleInput).state;
+      expect(collapsedSettled.wheels[0].camberDamageRad).toBeCloseTo(-0.22, 3);
+      expect(collapsedSettled.wheels[0].toeDamageRad).toBeCloseTo(0.12, 3);
+      // Collapsed FL spring shortens its suspension length compared to healthy baseline
+      expect(collapsedSettled.wheels[0].suspensionLength).toBeLessThan(
+        healthySettled.wheels[0].suspensionLength - 0.04,
+      );
+    } finally {
+      sim.dispose();
+    }
+  });
+
+  it('simulates knockable dynamic world props (barrels, crates, barriers), emits prop impacts, and resets cleanly', async () => {
+    const props: DynamicWorldPropDef[] = [
+      {
+        id: 'barrel-1',
+        kind: 'barrel',
+        shape: 'cylinder',
+        halfExtents: [0.35, 0.5, 0.35],
+        position: [0, 0.5, 14],
+        mass: 45,
+      },
+      {
+        id: 'crate-1',
+        kind: 'crate',
+        shape: 'box',
+        halfExtents: [0.45, 0.45, 0.45],
+        position: [0.8, 0.45, 15.5],
+        rotationY: 0.25,
+        mass: 30,
+      },
+      {
+        id: 'barrier-far',
+        kind: 'barrier',
+        shape: 'box',
+        halfExtents: [1.0, 0.5, 0.35],
+        position: [40, 0.5, 40],
+        mass: 180,
+      },
+    ];
+
+    const cfg = createVehiclePhysicsConfig(testManifest);
+    const sim = await DrivingWorldSim.create(cfg, flatRoadColliders, props);
+    try {
+      // Initially asleep at spawn
+      const t0 = sim.getDynamicPropTransforms();
+      expect(t0).toHaveLength(3);
+      expect(t0[0].sleeping).toBe(true);
+      expect(t0[0].position[2]).toBeCloseTo(14, 2);
+
+      // Drive into barrel-1 and crate-1
+      stepMany(sim, 15, idleInput);
+      let sawPropImpact = false;
+      for (let i = 0; i < 120; i++) {
+        const res = sim.step(1 / 60, { throttle: 1, brake: 0, steer: 0, handbrake: false });
+        if (res.impacts.some((imp) => imp.isDynamicProp && imp.dynamicPropKind === 'barrel')) {
+          sawPropImpact = true;
+        }
+      }
+      expect(sawPropImpact).toBe(true);
+
+      // Same zero-allocation array reference is updated in-place; hit barrel moved far from spawn while untouched barrier stayed asleep
+      const tAfter = sim.getDynamicPropTransforms();
+      expect(tAfter).toBe(t0);
+      const movedDist = Math.hypot(
+        tAfter[0].position[0] - 0,
+        tAfter[0].position[2] - 14,
+      );
+      expect(movedDist).toBeGreaterThan(2.5);
+      expect(tAfter[2].sleeping).toBe(true);
+
+      // resetDynamicProps puts everything back to spawn and asleep
+      sim.resetDynamicProps();
+      expect(tAfter[0].sleeping).toBe(true);
+      expect(tAfter[0].position[0]).toBeCloseTo(0, 3);
+      expect(tAfter[0].position[2]).toBeCloseTo(14, 3);
+    } finally {
+      sim.dispose();
+    }
+  });
 });
 
 describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
-  it('maps keyboard driving controls, horn (H), headlights (L), and edge-triggered actions cleanly', () => {
+  it('maps keyboard driving controls, horn (H), headlights (L), inspect (V), and edge-triggered actions cleanly', () => {
     const ctrl = new DriveInputController({ getGamepads: () => [] });
 
     ctrl.setKeyState('KeyW', true);
@@ -418,6 +567,7 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     ctrl.setKeyState('Space', true);
     ctrl.setKeyState('KeyH', true);
     ctrl.setKeyState('KeyL', true);
+    ctrl.setKeyState('KeyV', true);
     ctrl.setKeyState('KeyR', true);
     ctrl.setKeyState('KeyC', true);
     ctrl.setKeyState('KeyE', true);
@@ -432,13 +582,17 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     expect(f1.actions.repair).toBe(true);
     expect(f1.actions.cycleCamera).toBe(true);
     expect(f1.actions.toggleHeadlights).toBe(true);
+    expect(f1.actions.toggleInspect).toBe(true);
     expect(f1.actions.reset).toBe(false);
+    expect(f1.cameraOrbitX).toBe(0);
+    expect(f1.cameraOrbitY).toBe(0);
 
     // Holding the same keys on next frame keeps horn active but does NOT re-fire edge-triggered actions
     const f2 = ctrl.poll(0.1);
     expect(f2.actions.repair).toBe(false);
     expect(f2.actions.cycleCamera).toBe(false);
     expect(f2.actions.toggleHeadlights).toBe(false);
+    expect(f2.actions.toggleInspect).toBe(false);
     expect(f2.control.shift).toBe(0);
     expect(f2.control.throttle).toBe(1);
     expect(f2.control.horn).toBe(true);
@@ -452,12 +606,12 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     expect(f3.actions.exitDrive).toBe(true);
   });
 
-  it('maps W3C Gamepad axes with deadzone/curve, analog triggers, buttons, horn (R3), source tracking, and rumble', () => {
+  it('maps W3C Gamepad axes with deadzone/curve, right-stick camera orbit, analog triggers, horn (R3), inspect (L3), and rumble', () => {
     const playEffect = vi.fn();
     let activePad: GamepadLike | null = {
       id: 'Xbox Wireless Controller (STANDARD GAMEPAD)',
       connected: true,
-      axes: [0.05, 0, 0, 0], // inside deadzone (0.12)
+      axes: [0.05, 0, 0.04, -0.05], // inside deadzone (0.12)
       buttons: Array.from({ length: 16 }, () => ({ pressed: false, value: 0 })),
       vibrationActuator: { playEffect },
     };
@@ -468,25 +622,28 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
       getGamepads: () => [activePad],
     });
 
-    // Deadzone filters small stick drift
+    // Deadzone filters small stick drift on both left & right sticks
     const f0 = ctrl.poll(1 / 60);
     expect(f0.gamepadConnected).toBe(true);
     expect(f0.gamepadName).toContain('Xbox');
     expect(f0.control.steer).toBe(0);
+    expect(f0.cameraOrbitX).toBe(0);
+    expect(f0.cameraOrbitY).toBe(0);
     expect(f0.control.horn).toBe(false);
 
-    // Analog throttle RT (7), steering right (0.6), handbrake A (0), Y camera (3), RB shift up (5), Back repair (8), R3 horn (11)
+    // Analog throttle RT (7), steering right (0.6), right-stick orbit (-0.8, 0.5), handbrake A (0), Y camera (3), RB shift up (5), Back repair (8), L3 inspect (10), R3 horn (11)
     const buttons = Array.from({ length: 16 }, () => ({ pressed: false, value: 0 }));
     buttons[0] = { pressed: true, value: 1 };
     buttons[3] = { pressed: true, value: 1 };
     buttons[5] = { pressed: true, value: 1 };
     buttons[7] = { pressed: true, value: 0.75 };
     buttons[8] = { pressed: true, value: 1 };
+    buttons[10] = { pressed: true, value: 1 };
     buttons[11] = { pressed: true, value: 1 };
 
     activePad = {
       ...activePad,
-      axes: [0.6, 0, 0, 0],
+      axes: [0.6, 0, -0.8, 0.5],
       buttons,
     };
 
@@ -495,16 +652,20 @@ describe('DriveInputController (Keyboard + W3C Gamepad)', () => {
     expect(f1.control.throttle).toBeGreaterThan(0.7);
     expect(f1.control.steer).toBeGreaterThan(0.35);
     expect(f1.control.steer).toBeLessThan(0.6); // non-linear curve softens mid-stick
+    expect(f1.cameraOrbitX).toBeLessThan(-0.5);
+    expect(f1.cameraOrbitY).toBeGreaterThan(0.25);
     expect(f1.control.handbrake).toBe(true);
     expect(f1.control.horn).toBe(true);
     expect(f1.control.shift).toBe(1);
     expect(f1.actions.cycleCamera).toBe(true);
     expect(f1.actions.repair).toBe(true);
+    expect(f1.actions.toggleInspect).toBe(true);
 
     // Edge-triggered gamepad actions don't fire twice while held
     const f2 = ctrl.poll(1 / 60);
     expect(f2.actions.cycleCamera).toBe(false);
     expect(f2.actions.repair).toBe(false);
+    expect(f2.actions.toggleInspect).toBe(false);
     expect(f2.control.shift).toBe(0);
     expect(f2.control.horn).toBe(true);
 

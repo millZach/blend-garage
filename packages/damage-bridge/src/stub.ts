@@ -26,6 +26,8 @@ export class NoopDamageSimulator implements DamageSimulator {
       dirtyPartIds: [],
       detachedPartIds: [],
       detachedImpulses: [],
+      detachedParts: [],
+      meshUpdates: [],
       health: cloneMechanicalHealth(this.health),
     };
   }
@@ -35,6 +37,8 @@ export class NoopDamageSimulator implements DamageSimulator {
       dirtyPartIds: [],
       detachedPartIds: [],
       detachedImpulses: [],
+      detachedParts: [],
+      meshUpdates: [],
       health: cloneMechanicalHealth(this.health),
     };
   }
@@ -45,6 +49,8 @@ export class NoopDamageSimulator implements DamageSimulator {
       dirtyPartIds: [],
       detachedPartIds: [],
       detachedImpulses: [],
+      detachedParts: [],
+      meshUpdates: [],
       health: cloneMechanicalHealth(this.health),
     };
   }

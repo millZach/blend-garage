@@ -14,7 +14,7 @@ function makeCanvasTexture(
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (ctx) draw(ctx, w, h);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = options.srgb === false ? THREE.NoColorSpace : THREE.SRGBColorSpace;
@@ -325,6 +325,11 @@ export interface WorldSigns {
   highwayGantry: THREE.Texture;
   provingEntry: THREE.Texture;
   canyonEntry: THREE.Texture;
+  coastGantry: THREE.Texture;
+  desertGantry: THREE.Texture;
+  tunnelPortal: THREE.Texture;
+  rallyArch: THREE.Texture;
+  megaRampSign: THREE.Texture;
   crashLabBanner: THREE.Texture;
   impactWallSign: THREE.Texture;
   rampSign: THREE.Texture;
@@ -343,6 +348,8 @@ export interface WorldTextures {
   highwayRough: THREE.Texture;
   canyonRoad: THREE.Texture;
   canyonRough: THREE.Texture;
+  dirtRoad: THREE.Texture;
+  dirtRough: THREE.Texture;
   plazaAsphalt: THREE.Texture;
   plazaRough: THREE.Texture;
   provingApron: THREE.Texture;
@@ -351,6 +358,9 @@ export interface WorldTextures {
   concreteNormal: THREE.Texture;
   concreteRough: THREE.Texture;
   hazard: THREE.Texture;
+  targetWall: THREE.Texture;
+  crateWood: THREE.Texture;
+  barrelStripe: THREE.Texture;
   corrugated: THREE.Texture;
   buildingFacade: THREE.Texture;
   terrainDetail: THREE.Texture;
@@ -1087,15 +1097,192 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
     }),
   );
 
+  // Packed red-rock terracotta dirt & gravel desert rally road (512x512).
+  const dirtRoad = track(
+    makeCanvasTexture(
+      512,
+      512,
+      (ctx, w, h) => {
+        ctx.fillStyle = '#a8744e';
+        ctx.fillRect(0, 0, w, h);
+
+        // Soft sandy berms on outer U edges (0..0.14 and 0.86..1.0).
+        const gL = ctx.createLinearGradient(0, 0, w * 0.18, 0);
+        gL.addColorStop(0, '#be8d64');
+        gL.addColorStop(0.65, '#b27f58');
+        gL.addColorStop(1, 'rgba(168,116,78,0)');
+        ctx.fillStyle = gL;
+        ctx.fillRect(0, 0, w * 0.18, h);
+
+        const gR = ctx.createLinearGradient(w, 0, w * 0.82, 0);
+        gR.addColorStop(0, '#be8d64');
+        gR.addColorStop(0.65, '#b27f58');
+        gR.addColorStop(1, 'rgba(168,116,78,0)');
+        ctx.fillStyle = gR;
+        ctx.fillRect(w * 0.82, 0, w * 0.18, h);
+
+        // Compacted darker wheel ruts down the rally track.
+        for (const cx of [0.28, 0.44, 0.56, 0.72]) {
+          const x = cx * w;
+          const g = ctx.createLinearGradient(x - 24, 0, x + 24, 0);
+          g.addColorStop(0, 'rgba(92,54,32,0)');
+          g.addColorStop(0.5, 'rgba(92,54,32,0.34)');
+          g.addColorStop(1, 'rgba(92,54,32,0)');
+          ctx.fillStyle = g;
+          ctx.fillRect(x - 24, 0, 48, h);
+        }
+
+        // Loose crushed terracotta pebbles & gravel stones.
+        speckle(
+          ctx,
+          w,
+          h,
+          14000,
+          ['#c6966e', '#8e5a39', '#d6aa82', '#74482e', '#b58059', '#e0ba94'],
+          [1.0, 3.2],
+          [0.24, 0.62],
+          1103,
+        );
+      },
+      { repeat: true, clampU: true, anisotropy: aniso },
+    ),
+  );
+
+  const dirtRough = track(
+    makeCanvasTexture(
+      256,
+      256,
+      (ctx, w, h) => {
+        ctx.fillStyle = '#efefef';
+        ctx.fillRect(0, 0, w, h);
+        speckle(ctx, w, h, 3000, ['#ffffff', '#dedede', '#cdcdcd'], [1.2, 3.0], [0.22, 0.48], 1117);
+      },
+      { repeat: true, clampU: true, srgb: false, anisotropy: aniso },
+    ),
+  );
+
+  // High-contrast yellow/black bullseye crash-test target wall texture (512x512).
+  const targetWall = track(
+    makeCanvasTexture(
+      512,
+      512,
+      (ctx, w, h) => {
+        ctx.fillStyle = '#e4ad26';
+        ctx.fillRect(0, 0, w, h);
+        // Outer hazard border stripes.
+        ctx.fillStyle = '#1b1d20';
+        for (let i = 0; i < 16; i++) {
+          if (i % 2 === 0) {
+            ctx.fillRect(i * 32, 0, 32, 38);
+            ctx.fillRect(i * 32, h - 38, 32, 38);
+          }
+        }
+        // Concentric crash-test bullseye rings.
+        const cx = w / 2;
+        const cy = h / 2;
+        const rings: readonly [number, string][] = [
+          [180, '#1b1d20'],
+          [138, '#f0f1ec'],
+          [98, '#d93d2e'],
+          [60, '#f0f1ec'],
+          [26, '#1b1d20'],
+        ];
+        for (const [r, col] of rings) {
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // Telemetry crosshair axes.
+        ctx.strokeStyle = 'rgba(20,22,25,0.85)';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.moveTo(40, cy);
+        ctx.lineTo(w - 40, cy);
+        ctx.moveTo(cx, 50);
+        ctx.lineTo(cx, h - 50);
+        ctx.stroke();
+
+        speckle(ctx, w, h, 2600, ['#1b1d20', '#b5ada0', '#d4d0c8'], [1.2, 3.2], [0.08, 0.22], 1129);
+      },
+      { anisotropy: aniso },
+    ),
+  );
+
+  // Wooden smash-crate planks + diagonal cross-brace texture (256x256).
+  const crateWood = track(
+    makeCanvasTexture(
+      256,
+      256,
+      (ctx, w, h) => {
+        ctx.fillStyle = '#b98b54';
+        ctx.fillRect(0, 0, w, h);
+        // Horizontal slat seams.
+        ctx.strokeStyle = '#6f4e2b';
+        ctx.lineWidth = 4;
+        for (let y = 32; y < h; y += 32) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+          ctx.stroke();
+        }
+        // Diagonal wood brace & heavy perimeter frame.
+        ctx.strokeStyle = '#9e703f';
+        ctx.lineWidth = 26;
+        ctx.beginPath();
+        ctx.moveTo(20, 20);
+        ctx.lineTo(w - 20, h - 20);
+        ctx.stroke();
+        ctx.strokeStyle = '#8b6135';
+        ctx.lineWidth = 28;
+        ctx.strokeRect(14, 14, w - 28, h - 28);
+        ctx.strokeStyle = '#4e351c';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(28, 28, w - 56, h - 56);
+        speckle(ctx, w, h, 1800, ['#cfa46d', '#7d5932', '#614222'], [1, 3.2], [0.14, 0.32], 1151);
+      },
+      { anisotropy: aniso },
+    ),
+  );
+
+  // High-visibility orange/white crash barrel drum stripes (256x256).
+  const barrelStripe = track(
+    makeCanvasTexture(
+      256,
+      256,
+      (ctx, w, h) => {
+        ctx.fillStyle = '#e24a1e';
+        ctx.fillRect(0, 0, w, h);
+        // Reflective white horizontal safety bands.
+        ctx.fillStyle = '#f2f3f0';
+        ctx.fillRect(0, h * 0.2, w, h * 0.16);
+        ctx.fillRect(0, h * 0.62, w, h * 0.16);
+        // Subtle molded drum ribs.
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(0, h * 0.18, w, 4);
+        ctx.fillRect(0, h * 0.36, w, 4);
+        ctx.fillRect(0, h * 0.6, w, 4);
+        ctx.fillRect(0, h * 0.78, w, 4);
+        speckle(ctx, w, h, 1200, ['#202225', '#ffffff', '#b23210'], [1, 2.5], [0.06, 0.18], 1163);
+      },
+      { anisotropy: aniso },
+    ),
+  );
+
   const signs: WorldSigns = {
-    garageHeader: track(makeSignTexture(1024, 256, aniso, '#1d2229', '#e5a823', 'BLEND GARAGE', 'CUSTOM WORKS & PROVING GROUNDS', '#f4b938')),
-    highwayGantry: track(makeSignTexture(1024, 256, aniso, '#14583c', '#f2f5f7', 'VALLEY HIGHWAY LOOP', 'TOP SPEED STRAIGHTAWAY  •  4 LANES', '#f2f5f7')),
-    provingEntry: track(makeSignTexture(1024, 256, aniso, '#22262b', '#f2b824', 'CRASH PROVING GROUNDS', 'IMPACT WALLS  •  STUNT RAMP  •  SLALOM', '#f2b824')),
-    canyonEntry: track(makeSignTexture(1024, 256, aniso, '#1a5a42', '#f0f4f7', 'CANYON PASS', 'WINDING HILLSIDE CURVES  •  ELEVATION', '#f4c44e')),
+    garageHeader: track(makeSignTexture(1024, 256, aniso, '#1d2229', '#e5a823', 'BLEND GARAGE', 'CALIFORNIA MOTORSPORT COMPLEX', '#f4b938')),
+    highwayGantry: track(makeSignTexture(1024, 256, aniso, '#14583c', '#f2f5f7', 'VALLEY EXPRESSWAY', '1.4 KM STRAIGHT  •  MOUNTAIN TUNNEL', '#f2f5f7')),
+    provingEntry: track(makeSignTexture(1024, 256, aniso, '#22262b', '#f2b824', 'CRASH ARENA & STUNT PARK', 'TARGET WALL  •  3 JUMP RAMPS  •  DRIFT PAD', '#f2b824')),
+    canyonEntry: track(makeSignTexture(1024, 256, aniso, '#1a5a42', '#f0f4f7', 'ALPINE CANYON SWITCHBACKS', 'REDWOOD CLIMB  •  SUMMIT OVERLOOK', '#f4c44e')),
+    coastGantry: track(makeSignTexture(1024, 256, aniso, '#134e6f', '#f0f6fa', 'PACIFIC COAST HIGHWAY', 'OCEANFRONT BRIDGE  •  COASTAL BLUFFS', '#7dd3fc')),
+    desertGantry: track(makeSignTexture(1024, 256, aniso, '#6b321d', '#f5c77e', 'RED-ROCK DESERT RALLY', 'PACKED DIRT LOOP  •  SANDSTONE MESAS', '#f5c77e')),
+    tunnelPortal: track(makeSignTexture(1024, 256, aniso, '#1f242b', '#f2b824', 'SIERRA RIDGE TUNNEL', 'LENGTH 280M  •  HEADLIGHTS ON', '#f2b824')),
+    rallyArch: track(makeSignTexture(1024, 256, aniso, '#7c2d12', '#fbbf24', 'RED-ROCK RALLY STAGE', 'GRAVEL LOOP  •  FULL SEND', '#fde68a')),
+    megaRampSign: track(makeSignTexture(512, 256, aniso, '#1e242b', '#ef4444', 'MEGA LAUNCH', '200+ KM/H AIRFIELD JUMP', '#fca5a5')),
     crashLabBanner: track(makeSignTexture(1024, 256, aniso, '#242930', '#ef5a3c', 'CRASH TEST LAB', 'STRUCTURAL DEFORMATION FACILITY', '#f2b824')),
-    impactWallSign: track(makeSignTexture(512, 256, aniso, '#1f2226', '#f2b824', 'IMPACT WALL', '100 KM/H TEST LANE', '#f2b824')),
-    rampSign: track(makeSignTexture(512, 256, aniso, '#1f2226', '#38bdf8', 'STUNT RAMP', 'LAUNCH APRON AHEAD', '#38bdf8')),
-    slalomSign: track(makeSignTexture(512, 256, aniso, '#1f2226', '#fb923c', 'SLALOM COURSE', 'CHICANE & HANDLING', '#fb923c')),
+    impactWallSign: track(makeSignTexture(512, 256, aniso, '#1f2226', '#f2b824', 'TARGET WALL', 'HIGH-SPEED CRASH LANE', '#f2b824')),
+    rampSign: track(makeSignTexture(512, 256, aniso, '#1f2226', '#38bdf8', 'STUNT RAMPS', 'SMALL • MED • MEGA', '#38bdf8')),
+    slalomSign: track(makeSignTexture(512, 256, aniso, '#1f2226', '#fb923c', 'DRIFT & SLALOM', 'FIGURE-8 SKIDPAD', '#fb923c')),
   };
 
   const runwayDecals: RunwayDecals = {
@@ -1110,6 +1297,8 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
     highwayRough,
     canyonRoad,
     canyonRough,
+    dirtRoad,
+    dirtRough,
     plazaAsphalt,
     plazaRough,
     provingApron,
@@ -1118,6 +1307,9 @@ export function createWorldTextures(maxAnisotropy: number): WorldTextures {
     concreteNormal,
     concreteRough,
     hazard,
+    targetWall,
+    crateWood,
+    barrelStripe,
     corrugated,
     buildingFacade,
     terrainDetail,

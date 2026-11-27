@@ -1,9 +1,13 @@
 import type { BoxColliderDef, HeightfieldColliderDef, WorldColliderDef } from '@blend-garage/world-racing';
 import { TERRAIN_SEGMENTS, WORLD_SIZE, type TerrainData } from './terrain';
 
-const PERIMETER_HALF_EXTENT = 540;
-const PERIMETER_WALL_HEIGHT = 40;
-const PERIMETER_WALL_THICKNESS = 6;
+const PERIMETER_NORTH = -1120;
+const PERIMETER_SOUTH = 1120;
+const PERIMETER_EAST = 1120;
+/** West ocean barrier sits just off the sandy beach surf so cars cannot drive deep underwater. */
+const PERIMETER_WEST = -835;
+const PERIMETER_WALL_HEIGHT = 90;
+const PERIMETER_WALL_THICKNESS = 8;
 
 /**
  * Converts the row-major TerrainData height grid into Rapier 3D's exact column-major
@@ -39,14 +43,16 @@ export function buildTerrainHeightfieldCollider(terrain: TerrainData): Heightfie
 }
 
 /**
- * Builds 4 invisible perimeter boundary walls framing the outer mountain rim so vehicles
- * can never leave the 1200x1200m heightfield bounds.
+ * Builds 4 invisible perimeter boundary walls framing the 2400x2400m world (and Pacific Ocean edge)
+ * so vehicles stay safely inside drivable bounds.
  */
 export function buildPerimeterBoundaryColliders(): BoxColliderDef[] {
-  const span = PERIMETER_HALF_EXTENT * 2 + PERIMETER_WALL_THICKNESS;
+  const spanX = PERIMETER_EAST - PERIMETER_WEST + PERIMETER_WALL_THICKNESS * 2;
+  const spanZ = PERIMETER_SOUTH - PERIMETER_NORTH + PERIMETER_WALL_THICKNESS * 2;
+  const midX = (PERIMETER_WEST + PERIMETER_EAST) * 0.5;
+  const midZ = (PERIMETER_NORTH + PERIMETER_SOUTH) * 0.5;
   const hy = PERIMETER_WALL_HEIGHT * 0.5;
   const ht = PERIMETER_WALL_THICKNESS * 0.5;
-  const hs = span * 0.5;
 
   return [
     {
@@ -54,46 +60,46 @@ export function buildPerimeterBoundaryColliders(): BoxColliderDef[] {
       id: 'world-boundary-north',
       tag: 'boundary',
       surface: 'concrete',
-      position: [0, hy, -PERIMETER_HALF_EXTENT - ht],
-      halfExtents: [hs, hy, ht],
+      position: [midX, hy, PERIMETER_NORTH - ht],
+      halfExtents: [spanX * 0.5, hy, ht],
       friction: 0.4,
-      restitution: 0.1,
+      restitution: 0.08,
     },
     {
       type: 'box',
       id: 'world-boundary-south',
       tag: 'boundary',
       surface: 'concrete',
-      position: [0, hy, PERIMETER_HALF_EXTENT + ht],
-      halfExtents: [hs, hy, ht],
+      position: [midX, hy, PERIMETER_SOUTH + ht],
+      halfExtents: [spanX * 0.5, hy, ht],
       friction: 0.4,
-      restitution: 0.1,
+      restitution: 0.08,
     },
     {
       type: 'box',
       id: 'world-boundary-west',
       tag: 'boundary',
       surface: 'concrete',
-      position: [-PERIMETER_HALF_EXTENT - ht, hy, 0],
-      halfExtents: [ht, hy, hs],
+      position: [PERIMETER_WEST - ht, hy, midZ],
+      halfExtents: [ht, hy, spanZ * 0.5],
       friction: 0.4,
-      restitution: 0.1,
+      restitution: 0.08,
     },
     {
       type: 'box',
       id: 'world-boundary-east',
       tag: 'boundary',
       surface: 'concrete',
-      position: [PERIMETER_HALF_EXTENT + ht, hy, 0],
-      halfExtents: [ht, hy, hs],
+      position: [PERIMETER_EAST + ht, hy, midZ],
+      halfExtents: [ht, hy, spanZ * 0.5],
       friction: 0.4,
-      restitution: 0.1,
+      restitution: 0.08,
     },
   ];
 }
 
 /**
- * Combines terrain heightfield, all static props/barriers/ramps/walls/pillars/guardrails,
+ * Combines terrain heightfield, all static props/barriers/ramps/walls/pillars/bridge/tunnel/guardrails,
  * and outer perimeter boundaries into the complete static `WorldColliderDef[]` array.
  */
 export function assembleWorldColliders(

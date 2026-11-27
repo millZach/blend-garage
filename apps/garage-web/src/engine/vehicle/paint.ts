@@ -120,6 +120,8 @@ export class PaintBooth {
     if (!zone || zone.applied === state) return;
     zone.applied = state;
     zone.materials.forEach((m, i) => {
+      // Never let primary body paint overwrite clear/tinted optical glass or lamp covers.
+      if (state && zone.info.role === 'primary' && m.userData.glass) return;
       const stock = zone.stock[i];
       const hadMaps = Boolean(m.map) || Boolean(m.metalnessMap) || Boolean(m.roughnessMap);
       if (state) {

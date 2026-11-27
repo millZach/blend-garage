@@ -174,6 +174,51 @@ export type WorldColliderDef =
   | TrimeshColliderDef;
 
 // ---------------------------------------------------------------------------
+// Dynamic Knockable World Props (shared with OpenWorld)
+// ---------------------------------------------------------------------------
+
+export type DynamicPropKind = 'barrel' | 'crate' | 'barrier' | 'cone' | 'tire-stack';
+
+export interface DynamicWorldPropDef {
+  id: string;
+  kind: DynamicPropKind;
+  shape: 'box' | 'cylinder';
+  /** Half-extents [hx, hy, hz] for box; for cylinder [radius, halfHeight, radius]. */
+  halfExtents: [number, number, number];
+  position: [number, number, number];
+  rotationY?: number;
+  mass: number;
+  restitution?: number;
+  friction?: number;
+}
+
+export interface DynamicPropTransform {
+  id: string;
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  sleeping: boolean;
+}
+
+/** Optional per-wheel structural axle/suspension damage (aligned with @blend-garage/damage-bridge). */
+export interface WheelStructuralDamage {
+  integrity: number;
+  camberRad: number;
+  toeRad: number;
+  wobbleRad: number;
+  collapsed: number;
+}
+
+/** Extended mechanical health accepting optional structural wheel damage without breaking backwards compatibility. */
+export interface VehicleMechanicalHealth extends MechanicalHealth {
+  wheelDamage?: [
+    WheelStructuralDamage,
+    WheelStructuralDamage,
+    WheelStructuralDamage,
+    WheelStructuralDamage,
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Vehicle Physics Config & State
 // ---------------------------------------------------------------------------
 
@@ -268,6 +313,10 @@ export interface WheelPhysicsState {
   slipRatio: number;
   /** Wheel wobble offset in radians caused by wheel damage (0 when intact). */
   wobbleRad: number;
+  /** Bent camber offset in radians caused by structural corner damage (0 when intact). */
+  camberDamageRad: number;
+  /** Bent toe offset in radians caused by structural corner damage (0 when intact). */
+  toeDamageRad: number;
   /** World-space tire contact point if grounded, else null. */
   contactPoint: Vec3 | null;
   /** Ground surface type currently under this wheel. */
@@ -346,6 +395,10 @@ export interface PhysicsImpactRecord {
   gForce: number;
   colliderId?: string;
   colliderTag?: string;
+  /** True when the impact was against a dynamic knockable world prop. */
+  isDynamicProp?: boolean;
+  /** Prop kind when `isDynamicProp` is true. */
+  dynamicPropKind?: DynamicPropKind;
 }
 
 export interface PhysicsStepResult {
@@ -378,10 +431,13 @@ export interface DrivingWorldSimLike {
   ): PhysicsAdvanceResult;
   getState(): VehiclePhysicsState;
   getInterpolatedState(alpha: number): VehiclePhysicsState;
-  setMechanicalHealth(health: MechanicalHealth): void;
+  setMechanicalHealth(health: VehicleMechanicalHealth): void;
   setTransmissionMode(mode: TransmissionMode): void;
   resetPose(position: Vec3, headingRad: number): VehiclePhysicsState;
   addColliders(colliders: WorldColliderDef[]): void;
+  addDynamicProps(props: readonly DynamicWorldPropDef[]): void;
+  resetDynamicProps(): void;
+  getDynamicPropTransforms(): readonly DynamicPropTransform[];
   dispose(): void;
 }
 
@@ -398,11 +454,17 @@ export interface DriveInputActions {
   toggleHeadlights: boolean;
   exitDrive: boolean;
   toggleTransmission: boolean;
+  /** Edge-triggered one-tap Inspect / Pan Damage camera toggle (Keyboard V, Gamepad L3). */
+  toggleInspect: boolean;
 }
 
 export interface DriveInputFrame {
   control: VehicleControlInput;
   actions: DriveInputActions;
+  /** Right-stick horizontal camera orbit input (-1..+1, deadzoned). */
+  cameraOrbitX: number;
+  /** Right-stick vertical camera orbit input (-1..+1, deadzoned). */
+  cameraOrbitY: number;
   activeSource: InputSource;
   gamepadName: string | null;
   gamepadConnected: boolean;

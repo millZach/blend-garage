@@ -1,6 +1,7 @@
 import {
   clampFinite,
   createBrassHornCurve,
+  createCombustionCurve,
   createLoopingNoise,
   lerpClamped,
   normalizeDriveSurface,
@@ -15,11 +16,11 @@ import type { DriveAudioFrame } from './types';
 
 /**
  * Continuous open-world driving foley synthesizer:
- * - Dual-band resonant tire screech & drift howl
+ * - Organic stick-slip scrubbed rubber tire screech & drift howl (no shrill sine whistle)
  * - Surface-aware tire roll (asphalt hum, concrete joints, gravel crunch + pebbles, grass brush)
  * - Speed-cubed aerodynamic wind rush (camera-aware boost for hood/bumper views)
  * - Subtle carbon-ceramic brake whisper
- * - Dual-tone brass-saturated automotive horn (415 Hz + 523.25 Hz)
+ * - Dual-tone brass-saturated automotive horn (415.3 Hz + 523.25 Hz)
  * - Suspension touchdown thump after jumps
  * - Subtle California coastal/canyon outdoor breeze bed
  */
@@ -29,13 +30,17 @@ export class DrivingFoleySynth {
   private readonly output: GainNode;
   private readonly driveGateGain: GainNode;
 
-  // Tire screech / drift howl
-  private readonly screechNoise1: AudioBufferSourceNode;
-  private readonly screechNoise2: AudioBufferSourceNode;
-  private readonly screechBp1: BiquadFilterNode;
-  private readonly screechBp2: BiquadFilterNode;
-  private readonly screechToneOsc: OscillatorNode;
-  private readonly screechToneGain: GainNode;
+  // Organic scrubbed-rubber tire screech / drift howl (3 textured friction bands + stick-slip LFO)
+  private readonly screechBodyNoise: AudioBufferSourceNode;
+  private readonly screechBodyBp: BiquadFilterNode;
+  private readonly screechScrubNoise: AudioBufferSourceNode;
+  private readonly screechScrubBp: BiquadFilterNode;
+  private readonly screechGritNoise: AudioBufferSourceNode;
+  private readonly screechGritBp: BiquadFilterNode;
+  private readonly screechStickSlipLfo: OscillatorNode;
+  private readonly screechStickSlipDepth: GainNode;
+  private readonly screechShaper: WaveShaperNode;
+  private readonly screechLp: BiquadFilterNode;
   private readonly screechGain: GainNode;
 
   // Surface tire roll
@@ -103,34 +108,65 @@ export class DrivingFoleySynth {
     this.driveGateGain.gain.value = 0;
     this.driveGateGain.connect(this.output);
 
-    // 1. Tire Screech / Drift Howl (dual resonant bands + rubber tonal slip oscillator)
+    // 1. Organic Stick-Slip Scrubbed Rubber Tire Screech (broad resonant bands + soft saturation)
     this.screechGain = ctx.createGain();
     this.screechGain.gain.value = 0;
     this.screechGain.connect(this.driveGateGain);
 
-    this.screechBp1 = ctx.createBiquadFilter();
-    this.screechBp1.type = 'bandpass';
-    this.screechBp1.frequency.value = 840;
-    this.screechBp1.Q.value = 6.2;
-    this.screechBp1.connect(this.screechGain);
-    this.screechNoise1 = createLoopingNoise(ctx, noise.white, this.screechBp1);
+    this.screechLp = ctx.createBiquadFilter();
+    this.screechLp.type = 'lowpass';
+    this.screechLp.frequency.value = 3400;
+    this.screechLp.Q.value = 0.7;
+    this.screechLp.connect(this.screechGain);
 
-    this.screechBp2 = ctx.createBiquadFilter();
-    this.screechBp2.type = 'bandpass';
-    this.screechBp2.frequency.value = 1580;
-    this.screechBp2.Q.value = 7.8;
-    this.screechBp2.connect(this.screechGain);
-    this.screechNoise2 = createLoopingNoise(ctx, noise.pink, this.screechBp2, 1.25);
+    this.screechShaper = ctx.createWaveShaper();
+    this.screechShaper.curve = createCombustionCurve(2.2, 0.06, 512);
+    this.screechShaper.connect(this.screechLp);
 
-    this.screechToneGain = ctx.createGain();
-    this.screechToneGain.gain.value = 0.14;
-    this.screechToneGain.connect(this.screechGain);
+    // Warm rubber sidewall howl (lower formant)
+    this.screechBodyBp = ctx.createBiquadFilter();
+    this.screechBodyBp.type = 'bandpass';
+    this.screechBodyBp.frequency.value = 640;
+    this.screechBodyBp.Q.value = 2.6;
+    const bodyTrim = ctx.createGain();
+    bodyTrim.gain.value = 0.88;
+    this.screechBodyBp.connect(bodyTrim);
+    bodyTrim.connect(this.screechShaper);
+    this.screechBodyNoise = createLoopingNoise(ctx, noise.pink, this.screechBodyBp, 1.12);
 
-    this.screechToneOsc = ctx.createOscillator();
-    this.screechToneOsc.type = 'triangle';
-    this.screechToneOsc.frequency.value = 920;
-    this.screechToneOsc.connect(this.screechToneGain);
-    this.screechToneOsc.start(now);
+    // Tread-block slip scrub (mid formant)
+    this.screechScrubBp = ctx.createBiquadFilter();
+    this.screechScrubBp.type = 'bandpass';
+    this.screechScrubBp.frequency.value = 1280;
+    this.screechScrubBp.Q.value = 3.1;
+    const scrubTrim = ctx.createGain();
+    scrubTrim.gain.value = 0.65;
+    this.screechScrubBp.connect(scrubTrim);
+    scrubTrim.connect(this.screechShaper);
+    this.screechScrubNoise = createLoopingNoise(ctx, noise.white, this.screechScrubBp);
+
+    // Asphalt grit abrasion texture (high friction)
+    this.screechGritBp = ctx.createBiquadFilter();
+    this.screechGritBp.type = 'bandpass';
+    this.screechGritBp.frequency.value = 2350;
+    this.screechGritBp.Q.value = 1.5;
+    const gritTrim = ctx.createGain();
+    gritTrim.gain.value = 0.32;
+    this.screechGritBp.connect(gritTrim);
+    gritTrim.connect(this.screechShaper);
+    this.screechGritNoise = createLoopingNoise(ctx, noise.crackle, this.screechGritBp, 1.15);
+
+    // Subtle stick-slip tread block chatter LFO modulating formant frequencies
+    this.screechStickSlipDepth = ctx.createGain();
+    this.screechStickSlipDepth.gain.value = 52;
+    this.screechStickSlipDepth.connect(this.screechBodyBp.frequency);
+    this.screechStickSlipDepth.connect(this.screechScrubBp.frequency);
+
+    this.screechStickSlipLfo = ctx.createOscillator();
+    this.screechStickSlipLfo.type = 'triangle';
+    this.screechStickSlipLfo.frequency.value = 27;
+    this.screechStickSlipLfo.connect(this.screechStickSlipDepth);
+    this.screechStickSlipLfo.start(now);
 
     // 2. Surface Tire Roll
     this.rollLowFilter = ctx.createBiquadFilter();
@@ -188,7 +224,7 @@ export class DrivingFoleySynth {
     this.brakeFilter = ctx.createBiquadFilter();
     this.brakeFilter.type = 'bandpass';
     this.brakeFilter.frequency.value = 2950;
-    this.brakeFilter.Q.value = 12;
+    this.brakeFilter.Q.value = 10;
     this.brakeGain = ctx.createGain();
     this.brakeGain.gain.value = 0;
     this.brakeFilter.connect(this.brakeGain);
@@ -290,7 +326,6 @@ export class DrivingFoleySynth {
     const handbrake = Boolean(frame.handbrake);
     const surface = normalizeDriveSurface(frame.surface);
 
-    // Sync horn directly from frame
     this.setHorn(Boolean(frame.hornActive));
 
     // Suspension landing thump when touching down from air
@@ -308,19 +343,21 @@ export class DrivingFoleySynth {
     const grounded = airborne ? 0 : clampFinite(0.35 + load * 0.65, 0.2, 1.35, 1);
     const speedNorm = clampFinite(speedMps / 60, 0, 1.6, 0);
 
-    // 1. Tire Screech / Drift Howl
+    // 1. Organic Scrubbed-Rubber Tire Screech / Drift Howl
     const effectiveSlip = Math.max(slip, handbrake && speedMps > 2.2 ? 0.85 : 0);
     const surfaceSquealFactor =
       surface === 'asphalt' ? 1.0 : surface === 'concrete' ? 1.12 : surface === 'gravel' ? 0.14 : 0.05;
     const slipAboveThreshold = clampFinite((effectiveSlip - 0.24) / 0.76, 0, 1, 0);
     const speedSquealFactor = clampFinite((speedMps - 1.4) / 8.5, 0, 1, 0);
-    const screechLevel = grounded * surfaceSquealFactor * Math.pow(slipAboveThreshold, 1.15) * speedSquealFactor * 0.28;
+    const screechLevel = grounded * surfaceSquealFactor * Math.pow(slipAboveThreshold, 1.12) * speedSquealFactor * 0.29;
 
-    const screechPitchShift = lerpClamped(0.86, 1.24, clampFinite(speedMps / 45, 0, 1, 0.3) * 0.65 + slipAboveThreshold * 0.35);
-    safeSetTarget(this.screechBp1.frequency, 810 * screechPitchShift, now, 0.03, 450, 1800);
-    safeSetTarget(this.screechBp2.frequency, 1540 * screechPitchShift, now, 0.03, 900, 3200);
-    safeSetTarget(this.screechToneOsc.frequency, 905 * screechPitchShift, now, 0.03, 500, 2100);
-    safeSetTarget(this.screechGain.gain, screechLevel, now, 0.035, 0, 0.42);
+    const screechShift = lerpClamped(0.84, 1.24, clampFinite(speedMps / 46, 0, 1, 0.3) * 0.62 + slipAboveThreshold * 0.38);
+    safeSetTarget(this.screechBodyBp.frequency, 580 * screechShift, now, 0.035, 340, 1150);
+    safeSetTarget(this.screechScrubBp.frequency, 1220 * screechShift, now, 0.035, 760, 2200);
+    safeSetTarget(this.screechGritBp.frequency, 2250 * screechShift, now, 0.04, 1400, 3800);
+    safeSetTarget(this.screechStickSlipLfo.frequency, lerpClamped(21, 39, slipAboveThreshold), now, 0.05, 14, 48);
+    safeSetTarget(this.screechStickSlipDepth.gain, lerpClamped(28, 76, slipAboveThreshold), now, 0.05, 10, 110);
+    safeSetTarget(this.screechGain.gain, screechLevel, now, 0.04, 0, 0.42);
 
     // 2. Surface Tire Roll & Procedural Surface Details
     const rollBase = grounded * clampFinite(speedMps / 35, 0, 1.35, 0);
@@ -343,7 +380,6 @@ export class DrivingFoleySynth {
       midLevel = rollBase * 0.095;
       gravelLevel = rollBase * 0.012;
 
-      // Periodic concrete bridge/highway expansion joints (~every 14m)
       if (!airborne && speedMps > 4) {
         this.concreteJointDist += speedMps * dt;
         if (this.concreteJointDist >= 14.5) {
@@ -356,9 +392,8 @@ export class DrivingFoleySynth {
       midFreq = lerpClamped(650, 1550, speedNorm);
       lowLevel = rollBase * 0.16;
       midLevel = rollBase * 0.11;
-      gravelLevel = grounded * clampFinite((speedMps / 22) * (1 + slip * 0.9), 0, 1.4, 0) * 0.22;
+      gravelLevel = grounded * clampFinite((speedMps / 22) * (1 + slip * 0.9), 0, 1.4, 0) * 0.23;
 
-      // Scattered stone/pebble wheel-well pings
       if (!airborne && speedMps > 2.2) {
         this.pebbleTimer -= dt * clampFinite(speedMps / 10, 0.5, 4.5, 1);
         if (this.pebbleTimer <= 0) {
@@ -367,7 +402,6 @@ export class DrivingFoleySynth {
         }
       }
     } else {
-      // Grass: soft muffled brushy rustle
       lowCutoff = lerpClamped(130, 260, speedNorm);
       midFreq = lerpClamped(900, 2100, speedNorm);
       lowLevel = rollBase * 0.12;
@@ -400,13 +434,13 @@ export class DrivingFoleySynth {
 
     // 4. Subtle Carbon-Ceramic Brake Whisper
     const brakeSpeedWindow = speedMps > 3 && speedMps < 32 ? clampFinite(1 - Math.abs(speedMps - 14) / 18, 0, 1, 0) : 0;
-    const brakeSqueal = grounded * brakeSpeedWindow * clampFinite((brake - 0.5) / 0.5, 0, 1, 0) * 0.032;
+    const brakeSqueal = grounded * brakeSpeedWindow * clampFinite((brake - 0.5) / 0.5, 0, 1, 0) * 0.028;
     safeSetTarget(this.brakeFilter.frequency, lerpClamped(2650, 3250, brake), now, 0.04, 1800, 4500);
     safeSetTarget(this.brakeGain.gain, brakeSqueal, now, 0.04, 0, 0.08);
 
-    // 5. Outdoor California Coastal / Canyon Breeze (gently ducks as speed wind takes over)
-    const breezeLevel = lerpClamped(0.044, 0.012, clampFinite(speedMps / 30, 0, 1, 0));
-    safeSetTarget(this.breezeGain.gain, breezeLevel, now, 0.12, 0, 0.12);
+    // 5. Outdoor California Coastal / Canyon Breeze (ducks slightly inside tunnels or at high speed)
+    const breezeTarget = frame.inTunnel ? 0.008 : lerpClamped(0.044, 0.012, clampFinite(speedMps / 30, 0, 1, 0));
+    safeSetTarget(this.breezeGain.gain, breezeTarget, now, 0.12, 0, 0.12);
   }
 
   /** Stops all continuous sources and cleans up nodes. */
@@ -418,9 +452,10 @@ export class DrivingFoleySynth {
     const now = this.ctx.currentTime;
 
     const sources: AudioScheduledSourceNode[] = [
-      this.screechNoise1,
-      this.screechNoise2,
-      this.screechToneOsc,
+      this.screechBodyNoise,
+      this.screechScrubNoise,
+      this.screechGritNoise,
+      this.screechStickSlipLfo,
       this.rollLowNoise,
       this.rollMidNoise,
       this.gravelNoise,
@@ -470,7 +505,6 @@ export class DrivingFoleySynth {
 
   private playConcreteJointThump(intensity: number): void {
     const now = this.ctx.currentTime;
-    // Front & rear axle double-thump
     const delays = [0, 0.055];
     for (const d of delays) {
       const t = now + d;
@@ -499,23 +533,22 @@ export class DrivingFoleySynth {
     const g = this.ctx.createGain();
     osc.type = 'sine';
     safeSetValue(osc.frequency, 110, now, 30, 300);
-    safeExpRamp(osc.frequency, 36, now + 0.14, 24, 300);
+    safeExpRamp(osc.frequency, 34, now + 0.16, 22, 300);
 
     safeSetValue(g.gain, 0.0001, now, 0.0001, 1);
-    safeLinearRamp(g.gain, 0.28 * strength, now + 0.008, 0, 0.6);
-    safeExpRamp(g.gain, 0.0005, now + 0.17, 0.0001, 0.6);
+    safeLinearRamp(g.gain, 0.30 * strength, now + 0.008, 0, 0.6);
+    safeExpRamp(g.gain, 0.0005, now + 0.18, 0.0001, 0.6);
 
     osc.connect(g);
     g.connect(this.driveGateGain);
     osc.start(now);
-    scheduleStop(osc, now + 0.185, [g]);
+    scheduleStop(osc, now + 0.195, [g]);
 
-    // Tire scrub puff on touchdown
     const puff = this.ctx.createBufferSource();
     puff.buffer = this.noise.pink;
     const lp = this.ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.value = 640;
+    lp.frequency.value = 620;
     const pg = this.ctx.createGain();
     safeSetValue(pg.gain, 0.0001, now, 0.0001, 1);
     safeLinearRamp(pg.gain, 0.12 * strength, now + 0.01, 0, 0.4);

@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ELECTRIC_HYPERCAR_PROFILE,
   ENGINE_PROFILES,
+  ENGINE_WORKLET_NAME,
   SoundEngine,
+  createExhaustOutdoorIR,
+  createPhysicalEngineProbe,
+  createTunnelReverbIR,
   getEngineProfile,
   normalizeDriveSurface,
   resolveEngineProfile,
@@ -106,6 +110,22 @@ class MockWaveShaperNode extends MockAudioNode {
   oversample: OverSampleType = 'none';
 }
 
+class MockConvolverNode extends MockAudioNode {
+  buffer: MockAudioBuffer | null = null;
+  normalize = true;
+}
+
+class MockDelayNode extends MockAudioNode {
+  readonly delayTime = new MockAudioParam(0);
+}
+
+class MockPeriodicWave {
+  constructor(
+    readonly real: Float32Array,
+    readonly imag: Float32Array,
+  ) {}
+}
+
 class MockDynamicsCompressorNode extends MockAudioNode {
   readonly threshold = new MockAudioParam(-24);
   readonly knee = new MockAudioParam(30);
@@ -138,6 +158,11 @@ class MockOscillatorNode extends MockScheduledSourceNode {
   type: OscillatorType = 'sine';
   readonly frequency = new MockAudioParam(440);
   readonly detune = new MockAudioParam(0);
+  periodicWave: MockPeriodicWave | null = null;
+
+  setPeriodicWave(wave: MockPeriodicWave): void {
+    this.periodicWave = wave;
+  }
 }
 
 class MockAudioBuffer {
@@ -175,8 +200,13 @@ class MockAudioContext {
   readonly filters: MockBiquadFilterNode[] = [];
   readonly shapers: MockWaveShaperNode[] = [];
   readonly compressors: MockDynamicsCompressorNode[] = [];
+  readonly convolvers: MockConvolverNode[] = [];
+  readonly delays: MockDelayNode[] = [];
+  readonly periodicWaves: MockPeriodicWave[] = [];
   readonly bufferSources: MockBufferSourceNode[] = [];
   readonly buffers: MockAudioBuffer[] = [];
+
+  audioWorklet?: { addModule: (url: string) => Promise<void> };
 
   resumeCalls = 0;
   closeCalls = 0;
@@ -227,6 +257,24 @@ class MockAudioContext {
     return n;
   }
 
+  createConvolver(): MockConvolverNode {
+    const n = new MockConvolverNode();
+    this.convolvers.push(n);
+    return n;
+  }
+
+  createDelay(): MockDelayNode {
+    const n = new MockDelayNode();
+    this.delays.push(n);
+    return n;
+  }
+
+  createPeriodicWave(real: Float32Array, imag: Float32Array): MockPeriodicWave {
+    const w = new MockPeriodicWave(real, imag);
+    this.periodicWaves.push(w);
+    return w;
+  }
+
   createDynamicsCompressor(): MockDynamicsCompressorNode {
     const n = new MockDynamicsCompressorNode();
     this.compressors.push(n);
@@ -266,7 +314,32 @@ function makeDriveFrame(overrides: Partial<DriveAudioFrame> = {}): DriveAudioFra
     hornActive: false,
     scrapeIntensity: 0,
     engineHealth: 1.0,
+    inTunnel: false,
     ...overrides,
+  };
+}
+
+function measureSignal(buf: Float32Array): { rms: number; peak: number; dc: number; allFinite: boolean } {
+  let sum = 0;
+  let sq = 0;
+  let peak = 0;
+  let allFinite = true;
+  for (let i = 0; i < buf.length; i++) {
+    const v = buf[i];
+    if (!Number.isFinite(v)) {
+      allFinite = false;
+      continue;
+    }
+    sum += v;
+    sq += v * v;
+    const a = Math.abs(v);
+    if (a > peak) peak = a;
+  }
+  return {
+    rms: Math.sqrt(sq / Math.max(1, buf.length)),
+    peak,
+    dc: sum / Math.max(1, buf.length),
+    allFinite,
   };
 }
 
@@ -275,12 +348,18 @@ function makeDriveFrame(overrides: Partial<DriveAudioFrame> = {}): DriveAudioFra
 // ---------------------------------------------------------------------------
 
 describe('engineProfiles & surface helpers', () => {
-  it('maps every car in the Blend Garage fleet to its intended acoustic profile', () => {
-    expect(resolveEngineProfile('lamborghini-aventador-lp700-4').archetype).toBe('v12');
-    expect(resolveEngineProfile('lamborghini-aventador-lp700-4').redlineRpm).toBe(8500);
+  it('maps every car in the Blend Garage fleet to its intended acoustic & physical 4-stroke profile', () => {
+    const aventador = resolveEngineProfile('lamborghini-aventador-lp700-4');
+    expect(aventador.archetype).toBe('v12');
+    expect(aventador.redlineRpm).toBe(8500);
+    expect(aventador.physical.cylinders).toBe(12);
+    expect(aventador.physical.firingAnglesDeg).toHaveLength(12);
 
-    expect(resolveEngineProfile('porsche-911-gt3rs-astra-white').archetype).toBe('flat6');
-    expect(resolveEngineProfile('porsche-911-gt3rs-astra-white').redlineRpm).toBe(9000);
+    const gt3 = resolveEngineProfile('porsche-911-gt3rs-astra-white');
+    expect(gt3.archetype).toBe('flat6');
+    expect(gt3.redlineRpm).toBe(9000);
+    expect(gt3.physical.cylinders).toBe(6);
+    expect(gt3.physical.headerDelayLMs).not.toBe(gt3.physical.headerDelayRMs);
 
     const supraAstra = resolveEngineProfile('ff1-toyota-supra-astra');
     const supraNeon = resolveEngineProfile('ff1-toyota-supra-gemini-neon');
@@ -290,13 +369,19 @@ describe('engineProfiles & surface helpers', () => {
     expect(supraAstra.turboWhineGain).toBeGreaterThan(0.5);
     expect(supraAstra.bovIntensity).toBeGreaterThan(0.5);
 
-    expect(resolveEngineProfile('chevrolet-corvette-c3').archetype).toBe('v8-muscle');
+    // Cross-plane V8 muscle uses authentic L-R-L-L-R-L-R-R uneven bank pairing!
+    const c3 = resolveEngineProfile('chevrolet-corvette-c3');
+    expect(c3.archetype).toBe('v8-muscle');
+    expect(c3.physical.cylinderBanks).toEqual([0, 1, 0, 0, 1, 0, 1, 1]);
     expect(resolveEngineProfile('chevrolet-corvette-c4').archetype).toBe('v8-muscle');
     expect(resolveEngineProfile('chevrolet-corvette-c5').archetype).toBe('v8-muscle');
     expect(resolveEngineProfile({ id: 'dodge-challenger', name: 'Dodge Challenger SRT' }).archetype).toBe('v8-muscle');
 
+    // Exotic flat-plane V8 strictly alternates L-R-L-R-L-R-L-R
+    const c8 = resolveEngineProfile('chevrolet-corvette-c8');
+    expect(c8.archetype).toBe('v8-exotic');
+    expect(c8.physical.cylinderBanks).toEqual([0, 1, 0, 1, 0, 1, 0, 1]);
     expect(resolveEngineProfile('chevrolet-corvette-c6').archetype).toBe('v8-exotic');
-    expect(resolveEngineProfile('chevrolet-corvette-c8').archetype).toBe('v8-exotic');
 
     expect(resolveEngineProfile('supercar-original').archetype).toBe('v10');
     expect(resolveEngineProfile('lamborghini-huracan-evo').archetype).toBe('v10');
@@ -316,10 +401,11 @@ describe('engineProfiles & surface helpers', () => {
       const p = getEngineProfile(arch);
       expect(p).toBe(ENGINE_PROFILES[arch]);
       expect(p.harmonics).toHaveLength(4);
+      expect(p.physical.firingAnglesDeg).toHaveLength(p.physical.cylinders);
+      expect(p.physical.cylinderBanks).toHaveLength(p.physical.cylinders);
       expect(p.redlineRpm).toBeGreaterThan(p.idleRpm);
       expect(p.filterMaxHz).toBeGreaterThan(p.filterMinHz);
     }
-    // Pass-through returns exact object
     expect(resolveEngineProfile(ENGINE_PROFILES.flat6)).toBe(ENGINE_PROFILES.flat6);
   });
 
@@ -337,17 +423,169 @@ describe('engineProfiles & surface helpers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Unsupported / Autoplay-Locked Safety
+// 2. 48 kHz Physical 4-Stroke Combustion + Exhaust Waveguide DSP Verification
 // ---------------------------------------------------------------------------
 
-describe('SoundEngine graceful headless & autoplay behavior', () => {
+describe('48 kHz Physical 4-Stroke Engine Worklet DSP Kernel', () => {
+  it('synthesizes stable, finite, zero-DC, dynamic combustion & waveguide audio for every archetype + EV', () => {
+    const profiles = [
+      ENGINE_PROFILES.v12,
+      ENGINE_PROFILES.flat6,
+      ENGINE_PROFILES['i6-turbo'],
+      ENGINE_PROFILES['v8-muscle'],
+      ENGINE_PROFILES['v8-exotic'],
+      ENGINE_PROFILES.v10,
+      ELECTRIC_HYPERCAR_PROFILE,
+    ];
+
+    for (const profile of profiles) {
+      const probe = createPhysicalEngineProbe(48000);
+      probe.setProfile(profile);
+
+      // Warm idle
+      probe.setFrame({
+        active: true,
+        rpm: profile.idleRpm,
+        idleRpm: profile.idleRpm,
+        redlineRpm: profile.redlineRpm,
+        throttle: 0.02,
+        turboBoost: 0,
+        speedMps: 0,
+        engineHealth: 1,
+        cameraBrightness: 1,
+        cameraIntakeBoost: 1,
+        cameraLevel: 1,
+      });
+      const idleOut = probe.render(12000); // 250ms
+      const idleStats = measureSignal(idleOut.left);
+      expect(idleStats.allFinite).toBe(true);
+      expect(idleStats.peak).toBeLessThanOrEqual(1.0);
+      expect(Math.abs(idleStats.dc)).toBeLessThan(0.03);
+      expect(idleStats.rms).toBeGreaterThan(0.005);
+
+      // Wide-open throttle roar at 75% redline must have stronger energy than closed-throttle idle
+      probe.setFrame({
+        active: true,
+        rpm: profile.idleRpm + (profile.redlineRpm - profile.idleRpm) * 0.75,
+        idleRpm: profile.idleRpm,
+        redlineRpm: profile.redlineRpm,
+        throttle: 1.0,
+        turboBoost: profile.hasTurbo ? 0.9 : 0,
+        speedMps: 58,
+        engineHealth: 1,
+        cameraBrightness: 1.15,
+        cameraIntakeBoost: 1.35,
+        cameraLevel: 1,
+      });
+      const wotOut = probe.render(12000);
+      const wotStats = measureSignal(wotOut.left);
+      expect(wotStats.allFinite).toBe(true);
+      expect(wotStats.peak).toBeLessThanOrEqual(1.0);
+      expect(Math.abs(wotStats.dc)).toBeLessThan(0.03);
+      expect(wotStats.rms).toBeGreaterThan(idleStats.rms * 1.15);
+    }
+  });
+
+  it('produces authentic stereo bank asymmetry for cross-plane V8 (L-R-L-L-R-L-R-R) and handles ignition, shifts, crackles & rev preview', () => {
+    const probe = createPhysicalEngineProbe(48000);
+    probe.setProfile(ENGINE_PROFILES['v8-muscle']);
+
+    // Showroom rev preview works even while continuous driving active === false
+    probe.triggerRevPreview(ENGINE_PROFILES['v8-muscle']);
+    const preview = probe.render(16000);
+    const previewStats = measureSignal(preview.left);
+    expect(previewStats.allFinite).toBe(true);
+    expect(previewStats.rms).toBeGreaterThan(0.02);
+
+    // Measure genuine stereo L/R bank width on cross-plane V8 idle
+    probe.setFrame({
+      active: true,
+      rpm: 720,
+      idleRpm: 700,
+      redlineRpm: 6500,
+      throttle: 0.05,
+      turboBoost: 0,
+      speedMps: 0,
+      engineHealth: 1,
+      cameraBrightness: 1,
+      cameraIntakeBoost: 1,
+      cameraLevel: 1,
+    });
+    const v8Idle = probe.render(14000);
+    const diff = new Float32Array(v8Idle.left.length);
+    for (let i = 0; i < diff.length; i++) diff[i] = v8Idle.left[i] - v8Idle.right[i];
+    expect(measureSignal(diff).rms).toBeGreaterThan(0.008);
+
+    // Ignition crank + upshift cut + downshift blip + high-RPM overrun crackles + damaged misfire
+    probe.triggerIgnition();
+    const crank = probe.render(18000);
+    expect(measureSignal(crank.left).allFinite).toBe(true);
+    expect(measureSignal(crank.left).rms).toBeGreaterThan(0.02);
+
+    probe.setFrame({
+      active: true,
+      rpm: 5800,
+      idleRpm: 700,
+      redlineRpm: 6500,
+      throttle: 0.0,
+      turboBoost: 0,
+      speedMps: 45,
+      engineHealth: 0.25,
+      cameraBrightness: 1,
+      cameraIntakeBoost: 1,
+      cameraLevel: 1,
+    });
+    probe.triggerShift('up', 5800);
+    probe.triggerShift('down', 4400);
+    const overrun = probe.render(24000);
+    const overrunStats = measureSignal(overrun.left);
+    expect(overrunStats.allFinite).toBe(true);
+    expect(overrunStats.peak).toBeLessThanOrEqual(1.0);
+    expect(overrunStats.rms).toBeGreaterThan(0.01);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. Procedural Acoustic Impulse Responses (Outdoor Cabinet + Concrete Tunnel)
+// ---------------------------------------------------------------------------
+
+describe('Procedural Convolver Impulse Responses', () => {
+  it('generates decaying stereo outdoor exhaust cabinet and concrete tunnel impulse responses', () => {
+    const mockCtx = new MockAudioContext();
+    const outdoor = createExhaustOutdoorIR(mockCtx as unknown as BaseAudioContext);
+    const tunnel = createTunnelReverbIR(mockCtx as unknown as BaseAudioContext);
+
+    expect(outdoor.numberOfChannels).toBe(2);
+    expect(tunnel.numberOfChannels).toBe(2);
+    expect(tunnel.length).toBeGreaterThan(outdoor.length * 5);
+
+    const outL = measureSignal(outdoor.getChannelData(0));
+    const tunL = measureSignal(tunnel.getChannelData(0));
+    expect(outL.allFinite).toBe(true);
+    expect(tunL.allFinite).toBe(true);
+    expect(outL.rms).toBeGreaterThan(0.01);
+    expect(tunL.rms).toBeGreaterThan(0.01);
+
+    // Early energy must exceed late tail energy (natural acoustic decay)
+    const tunData = tunnel.getChannelData(0);
+    const earlyRms = measureSignal(tunData.subarray(0, Math.floor(tunData.length * 0.2))).rms;
+    const lateRms = measureSignal(tunData.subarray(Math.floor(tunData.length * 0.8))).rms;
+    expect(earlyRms).toBeGreaterThan(lateRms * 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Unsupported / Autoplay-Locked Safety & AudioWorklet Blob URL Loading
+// ---------------------------------------------------------------------------
+
+describe('SoundEngine graceful headless, autoplay & AudioWorklet lifecycle', () => {
   it('acts as a safe zero-throw no-op when Web Audio API is unavailable', async () => {
     const engine = new SoundEngine();
     expect(engine.getState().supported).toBe(false);
     expect(engine.getState().unlocked).toBe(false);
     expect(await engine.unlock()).toBe(false);
+    expect(engine.isUsingEngineWorklet()).toBe(false);
 
-    // Every single method must execute cleanly without throwing
     expect(() => {
       engine.setMode('shop');
       engine.setCarProfile('lamborghini-aventador-lp700-4');
@@ -362,7 +600,7 @@ describe('SoundEngine graceful headless & autoplay behavior', () => {
       engine.setLiftMoving(true);
       engine.setMode('drive');
       engine.playIgnition();
-      engine.updateDrive(makeDriveFrame());
+      engine.updateDrive(makeDriveFrame({ inTunnel: true }));
       engine.playShift('up', 7800);
       engine.playShift('down', 4200);
       engine.setHorn(true);
@@ -394,7 +632,6 @@ describe('SoundEngine graceful headless & autoplay behavior', () => {
     expect(engine.getState()).toMatchObject({ supported: true, unlocked: false, muted: false });
     expect(createdCount).toBe(0);
 
-    // Pre-unlock settings are preserved and notify subscribers
     const snapshots: AudioStateSnapshot[] = [];
     const unsub = engine.subscribe(() => snapshots.push(engine.getState()));
 
@@ -405,7 +642,6 @@ describe('SoundEngine graceful headless & autoplay behavior', () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0].volume).toBeCloseTo(0.6);
 
-    // Concurrent unlocks create exactly one AudioContext
     const [r1, r2] = await Promise.all([engine.unlock(), engine.unlock()]);
     expect(r1).toBe(true);
     expect(r2).toBe(true);
@@ -419,6 +655,73 @@ describe('SoundEngine graceful headless & autoplay behavior', () => {
     engine.dispose();
   });
 
+  it('loads the 48 kHz inline-Blob AudioWorklet when supported and forwards profile/frame/transients cleanly', async () => {
+    const addedModules: string[] = [];
+    const postedMessages: unknown[] = [];
+    const mockCtx = new MockAudioContext();
+    mockCtx.audioWorklet = {
+      addModule: async (url: string) => {
+        addedModules.push(url);
+      },
+    };
+
+    class MockWorkletNode extends MockAudioNode {
+      readonly port = {
+        postMessage: (msg: unknown) => {
+          postedMessages.push(msg);
+        },
+      };
+      constructor(
+        _ctx: AudioContext,
+        readonly name: string,
+      ) {
+        super();
+      }
+    }
+
+    const origWorkletNode = (globalThis as Record<string, unknown>).AudioWorkletNode;
+    (globalThis as Record<string, unknown>).AudioWorkletNode = MockWorkletNode;
+
+    try {
+      const engine = new SoundEngine({
+        audioContextFactory: () => mockCtx as unknown as AudioContext,
+      });
+
+      expect(await engine.unlock()).toBe(true);
+      expect(engine.isUsingEngineWorklet()).toBe(true);
+      expect(addedModules).toHaveLength(1);
+      expect(addedModules[0]).toMatch(/^blob:/);
+
+      engine.setCarProfile('chevrolet-corvette-c3');
+      engine.setMode('drive');
+      engine.playIgnition();
+      engine.updateDrive(makeDriveFrame({ rpm: 4200, throttle: 0.9, inTunnel: true }));
+      engine.playShift('up', 6100);
+      engine.playShift('down', 4200);
+      engine.playCarSelect('lamborghini-aventador-lp700-4');
+
+      const msgTypes = postedMessages.map((m) => (m as { type?: string }).type);
+      expect(msgTypes).toContain('profile');
+      expect(msgTypes).toContain('frame');
+      expect(msgTypes).toContain('ignition');
+      expect(msgTypes).toContain('shift');
+      expect(msgTypes).toContain('revPreview');
+
+      // Worklet name matches exported constant
+      expect(ENGINE_WORKLET_NAME).toBe('blend-garage-engine-processor');
+
+      engine.dispose();
+      expect(postedMessages.map((m) => (m as { type?: string }).type)).toContain('dispose');
+      expect(engine.isUsingEngineWorklet()).toBe(false);
+    } finally {
+      if (origWorkletNode === undefined) {
+        delete (globalThis as Record<string, unknown>).AudioWorkletNode;
+      } else {
+        (globalThis as Record<string, unknown>).AudioWorkletNode = origWorkletNode;
+      }
+    }
+  });
+
   it('handles blocked AudioContext.resume() without throwing or rejecting', async () => {
     const mockCtx = new MockAudioContext();
     mockCtx.failResume = true;
@@ -430,7 +733,6 @@ describe('SoundEngine graceful headless & autoplay behavior', () => {
     expect(ok).toBe(false);
     expect(engine.getState().unlocked).toBe(false);
 
-    // Succeeds on next user gesture
     mockCtx.failResume = false;
     expect(await engine.unlock()).toBe(true);
     expect(engine.getState().unlocked).toBe(true);
@@ -440,11 +742,11 @@ describe('SoundEngine graceful headless & autoplay behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Full Audio Graph, Limiter, Volume/Mute/Pause & Mode Crossfades
+// 5. Master Chain, Limiter, Convolver Sends, Volume/Mute/Pause & Lifecycle
 // ---------------------------------------------------------------------------
 
-describe('SoundEngine master chain, state controls & lifecycle', () => {
-  it('constructs a master soft limiter, noise bank, and handles mute/volume/pause cleanly', async () => {
+describe('SoundEngine master chain, acoustic convolvers & state controls', () => {
+  it('constructs limiter, outdoor cabinet + tunnel convolvers, fallback PeriodicWave/waveguide, and modulates tunnel send', async () => {
     const mockCtx = new MockAudioContext();
     const engine = new SoundEngine({
       audioContextFactory: () => mockCtx as unknown as AudioContext,
@@ -453,15 +755,37 @@ describe('SoundEngine master chain, state controls & lifecycle', () => {
 
     await engine.unlock();
 
-    // Master soft limiter + 4 shared noise buffers (white, pink, brown, crackle)
+    // Master soft limiter + both ConvolverNodes (tunnel reverb + outdoor exhaust cabinet)
     expect(mockCtx.compressors.length).toBeGreaterThanOrEqual(1);
     expect(mockCtx.compressors[0].ratio.value).toBeGreaterThanOrEqual(8);
-    expect(mockCtx.buffers).toHaveLength(4);
+    expect(mockCtx.convolvers).toHaveLength(2);
+    // Fallback PeriodicWave combustion table & exhaust waveguide DelayNode created
+    expect(mockCtx.periodicWaves.length).toBeGreaterThanOrEqual(1);
+    expect(mockCtx.delays.length).toBeGreaterThanOrEqual(1);
 
-    // First gain node created in buildAudioGraph is masterGain connected to destination
     const masterGain = mockCtx.gains[0];
     expect(masterGain.connections).toContain(mockCtx.destination);
     expect(masterGain.gain.value).toBeCloseTo(0.8);
+
+    // Find the tunnelSendGain (the gain node connected directly to the first convolver)
+    const tunnelConvolver = mockCtx.convolvers[0];
+    const tunnelSendGain = mockCtx.gains.find((g) => g.connections.includes(tunnelConvolver));
+    expect(tunnelSendGain).toBeDefined();
+    expect(tunnelSendGain?.gain.value).toBe(0);
+
+    // Entering tunnel in drive mode smoothly raises tunnel reverb send; exiting drops it back to 0
+    engine.setMode('drive');
+    engine.updateDrive(makeDriveFrame({ inTunnel: true }));
+    expect(tunnelSendGain!.gain.value).toBeGreaterThan(0.4);
+
+    engine.updateDrive(makeDriveFrame({ inTunnel: false }));
+    expect(tunnelSendGain!.gain.value).toBe(0);
+
+    // Leaving drive mode while inside tunnel also resets tunnel send cleanly to 0
+    engine.updateDrive(makeDriveFrame({ inTunnel: true }));
+    expect(tunnelSendGain!.gain.value).toBeGreaterThan(0.4);
+    engine.setMode('shop');
+    expect(tunnelSendGain!.gain.value).toBe(0);
 
     // Mute / unmute & volume clamping
     expect(engine.toggleMute()).toBe(true);
@@ -480,13 +804,11 @@ describe('SoundEngine master chain, state controls & lifecycle', () => {
     engine.setMasterVolume(0.65);
     expect(engine.getState().volume).toBeCloseTo(0.65);
 
-    // Pause silences master output and unpause restores it
     engine.setPaused(true);
     expect(masterGain.gain.value).toBe(0);
     engine.setPaused(false);
     expect(masterGain.gain.value).toBeCloseTo(0.65);
 
-    // Dispose stops all continuous sources, closes AudioContext, and guards subsequent calls
     const listener = vi.fn();
     engine.subscribe(listener);
     engine.dispose();
@@ -495,7 +817,6 @@ describe('SoundEngine master chain, state controls & lifecycle', () => {
     expect(engine.getState().unlocked).toBe(false);
     expect(listener).toHaveBeenCalledTimes(1);
 
-    // Double dispose and post-dispose calls are safe no-ops
     expect(() => {
       engine.dispose();
       engine.updateDrive(makeDriveFrame());
@@ -507,7 +828,7 @@ describe('SoundEngine master chain, state controls & lifecycle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Driving Synthesis: Engine, Turbo BOV, Crackles, Foley, Surfaces & Crashes
+// 6. Driving Synthesis: Engine, Turbo BOV, Crackles, Foley, Surfaces & Crashes
 // ---------------------------------------------------------------------------
 
 describe('Driving, Engine, Foley & Crash synthesis', () => {
@@ -524,7 +845,6 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     engine.playIgnition();
     expect(mockCtx.oscillators.length).toBeGreaterThan(oscBeforeIgnition);
 
-    // Accelerate hard under boost
     mockCtx.advanceTime(0.4);
     for (let i = 0; i < 15; i++) {
       mockCtx.advanceTime(1 / 60);
@@ -541,7 +861,7 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
       );
     }
 
-    // Abrupt lift-off at high boost should fire BOV flutter buffer sources
+    // Abrupt lift-off at high boost fires BOV flutter buffer sources
     const sourcesBeforeLift = mockCtx.bufferSources.length;
     mockCtx.advanceTime(0.05);
     engine.updateDrive(
@@ -574,7 +894,6 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     }
     expect(mockCtx.bufferSources.length).toBeGreaterThan(sourcesBeforeDecel);
 
-    // Upshift & downshift transients
     const oscBeforeShift = mockCtx.oscillators.length;
     mockCtx.advanceTime(0.35);
     engine.playShift('up', 7300);
@@ -594,7 +913,6 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
       );
     }
 
-    // Switch through all archetypes including electric Tesla Roadster
     for (const carId of [
       'lamborghini-aventador-lp700-4',
       'porsche-911-gt3rs-astra-white',
@@ -641,6 +959,7 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
         hornActive: true,
         scrapeIntensity: Number.POSITIVE_INFINITY,
         engineHealth: Number.NaN,
+        inTunnel: true,
       });
       engine.playShift('up', Number.NaN);
       engine.playImpact({ gForce: Number.NaN, speedMps: Number.POSITIVE_INFINITY });
@@ -650,7 +969,7 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     engine.dispose();
   });
 
-  it('drives tire screech, surface details (gravel pebbles, concrete joints), wind, horn, and airborne touchdown', async () => {
+  it('drives smooth scrubbed-rubber tire screech, surface details, wind, horn, and airborne touchdown', async () => {
     const mockCtx = new MockAudioContext();
     const engine = new SoundEngine({
       audioContextFactory: () => mockCtx as unknown as AudioContext,
@@ -688,7 +1007,15 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     }
     expect(mockCtx.oscillators.length).toBeGreaterThan(oscBeforeConcrete);
 
-    // Grass + handbrake drift + horn toggle
+    // Asphalt drift, grass & horn toggle
+    engine.updateDrive(
+      makeDriveFrame({
+        surface: 'asphalt',
+        handbrake: true,
+        slipRatio: 0.92,
+        speedMps: 30,
+      }),
+    );
     engine.updateDrive(
       makeDriveFrame({
         surface: 'grass',
@@ -712,7 +1039,7 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     engine.dispose();
   });
 
-  it('triggers layered crash impacts, glass shatter at >=18G, part detach, continuous scrape, repair & reset', async () => {
+  it('triggers heavy crash impacts (sub-slam, buckling groan, staggered glass shatter), part detach, scrape, repair & reset', async () => {
     const mockCtx = new MockAudioContext();
     const engine = new SoundEngine({
       audioContextFactory: () => mockCtx as unknown as AudioContext,
@@ -720,12 +1047,10 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     await engine.unlock();
     engine.setMode('drive');
 
-    // Tiny sub-threshold bump produces no crash nodes
     const beforeTiny = mockCtx.oscillators.length;
     engine.playImpact({ gForce: 0.2, speedMps: 0.3 });
     expect(mockCtx.oscillators.length).toBe(beforeTiny);
 
-    // Light fender bender (no glass shatter)
     const beforeLight = mockCtx.oscillators.length;
     engine.playImpact({ gForce: 7, speedMps: 9, metallic: true });
     const lightOscAdded = mockCtx.oscillators.length - beforeLight;
@@ -736,18 +1061,16 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     engine.playImpact({ gForce: 7, speedMps: 9 });
     expect(mockCtx.oscillators.length).toBe(beforeDup);
 
-    // Heavy >=18G crash triggers glass shatter + detached panel tumble
+    // Heavy >=18G crash triggers buckling groan + staggered glass shatter + detached panel tumble
     mockCtx.advanceTime(0.2);
     const beforeHeavy = mockCtx.oscillators.length;
-    engine.playImpact({ gForce: 24, speedMps: 31, panelDetached: true });
+    engine.playImpact({ gForce: 28, speedMps: 34, panelDetached: true });
     const heavyOscAdded = mockCtx.oscillators.length - beforeHeavy;
-    expect(heavyOscAdded).toBeGreaterThan(lightOscAdded + 8);
+    expect(heavyOscAdded).toBeGreaterThan(lightOscAdded + 10);
 
-    // Continuous scrape on & off
     engine.updateScrape(0.85, 22);
     engine.updateScrape(0, 0);
 
-    // Repair & Reset audio cues
     const beforeRepair = mockCtx.oscillators.length;
     engine.playRepair();
     expect(mockCtx.oscillators.length).toBeGreaterThan(beforeRepair);
@@ -782,14 +1105,12 @@ describe('Driving, Engine, Foley & Crash synthesis', () => {
     mockCtx.advanceTime(0.05);
     engine.playUiClick();
 
-    // Car select updates active profile and fires bay door rumble + engine rev preview
     engine.playCarSelect('lamborghini-aventador-lp700-4');
     expect(engine.getCarProfile().archetype).toBe('v12');
 
     expect(mockCtx.oscillators.length).toBeGreaterThan(initialOsc + 10);
     expect(mockCtx.bufferSources.length).toBeGreaterThan(initialBuf + 3);
 
-    // Leaving shop to idle cleanly silences shop ambience
     engine.setMode('idle');
     expect(engine.getMode()).toBe('idle');
 

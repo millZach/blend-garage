@@ -4,9 +4,16 @@ import type { BoxColliderDef, CylinderColliderDef, TrimeshColliderDef, WorldColl
 import { clamp, lerp, seededRandom } from '../math';
 import { MeshBatcher } from '../MeshBatcher';
 import { createFoliageAndPropTextures } from './foliageTextures';
-import type { RoadNetwork } from './roads';
-import type { TerrainData } from './terrain';
+import {
+  COAST_BRIDGE_BOUNDS,
+  TUNNEL_BOUNDS,
+  isInsideTunnelCoords,
+  isOnCoastBridgeSpan,
+  type RoadNetwork,
+} from './roads';
+import { alpineBiomeWeight, desertBiomeWeight, type TerrainData } from './terrain';
 import type { WorldTextures } from './textures';
+import { OCEAN_LEVEL, shorelineXAtZ } from './water';
 
 export interface DistanceCullSector {
   object: THREE.Object3D;
@@ -1492,143 +1499,167 @@ export function buildWorldProps(
   }
 
   // -------------------------------------------------------------------------
-  // 2. CRASH-TEST & STUNT PROVING GROUNDS (X: 74..242, Z: -78..124)
+  // 2. EXPANDED CRASH TEST ARENA & AIRFIELD STUNT PARK (X: -540..-140, Z: 440..940)
   // -------------------------------------------------------------------------
   {
-    // (a) Main Frontal Crash Impact Wall at X = 208, Z = +20.
-    batcher.slab(concreteMat, 2.6, 3.4, 14.4, 208, 0, 20);
-    batcher.slab(steelDarkMat, 2.78, 0.24, 14.6, 208, 3.38, 20); // Steel top cap beam
-    // Scuffed rubber-marked hazard-chevron impact apron facing oncoming traffic (-X)
-    batcher.slab(crashHazardMat, 0.16, 3.12, 13.9, 206.64, 0.14, 20);
-    // Steel side corner guard angles framing the impact apron
-    batcher.slab(steelDarkMat, 0.24, 3.42, 0.24, 206.66, 0, 12.88);
-    batcher.slab(steelDarkMat, 0.24, 3.42, 0.24, 206.66, 0, 27.12);
-    // Heavy steel crash-test backing truss buttresses + concrete rear anchor blocks
-    for (const bz of [14.5, 20, 25.5]) {
-      batcher.slab(concreteMat, 2.8, 1.0, 1.15, 211.0, 0, bz);
-      batcher.beam(steelDarkMat, [209.25, 3.25, bz], [212.1, 0.85, bz], 0.34, 0.34);
-      batcher.beam(steelDarkMat, [209.25, 1.85, bz], [211.2, 0.85, bz], 0.24, 0.24);
-    }
-    // Horizontal cross-beam uniting rear steel buttresses
-    batcher.slab(steelDarkMat, 0.28, 0.28, 11.4, 210.6, 2.05, 20);
-    addSolidBox('pg-main-crash-wall', 'wall', 'concrete', 2.8, 3.4, 14.4, 208, 1.7, 20);
+    const targetWallMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        name: 'crash-target-wall',
+        map: textures.targetWall,
+        roughness: 0.62,
+        metalness: 0.06,
+      }),
+    );
 
-    // Impact Wall overhead sign + steel truss support frame + warning beacons
+    // (a) Massive High-Speed Bullseye Concrete Crash Target Wall at X = -216, Z = 620.
+    const wallX = -216;
+    const wallZ = 620;
+    batcher.slab(concreteMat, 3.2, 4.6, 18.4, wallX, 0, wallZ);
+    batcher.slab(steelDarkMat, 3.4, 0.28, 18.6, wallX, 4.58, wallZ);
+    // Yellow/black bullseye crash-test target panel on oncoming (-X) impact face!
+    const bullseyeGeo = trackGeo(new THREE.PlaneGeometry(17.6, 4.2));
+    const bullseyeMesh = new THREE.Mesh(bullseyeGeo, targetWallMat);
+    bullseyeMesh.position.set(wallX - 1.64, 2.3, wallZ);
+    bullseyeMesh.rotation.y = -Math.PI / 2;
+    bullseyeMesh.updateMatrix();
+    bullseyeMesh.matrixAutoUpdate = false;
+    group.add(bullseyeMesh);
+
+    // Heavy rear steel truss buttresses & concrete anchor blocks.
+    for (const bz of [613, 620, 627]) {
+      batcher.slab(concreteMat, 3.2, 1.1, 1.25, wallX + 3.4, 0, bz);
+      batcher.beam(steelDarkMat, [wallX + 1.5, 4.35, bz], [wallX + 4.7, 0.9, bz], 0.36, 0.36);
+      batcher.beam(steelDarkMat, [wallX + 1.5, 2.35, bz], [wallX + 3.6, 0.9, bz], 0.26, 0.26);
+    }
+    batcher.slab(steelDarkMat, 0.32, 0.32, 15.2, wallX + 3.0, 2.55, wallZ);
+    addSolidBox('pg-main-crash-wall', 'wall', 'concrete', 3.4, 4.6, 18.4, wallX, 2.3, wallZ);
+
+    // Overhead TARGET WALL sign.
     const wallSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.impactWallSign, roughness: 0.42 }));
-    const wallSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(7.2, 3.4)), wallSignMat);
-    wallSign.position.set(206.5, 5.4, 20);
+    const wallSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(8.4, 3.8)), wallSignMat);
+    wallSign.position.set(wallX - 1.75, 6.8, wallZ);
     wallSign.rotation.y = -Math.PI / 2;
     wallSign.updateMatrix();
     wallSign.matrixAutoUpdate = false;
     group.add(wallSign);
-    batcher.slab(steelDarkMat, 0.14, 3.55, 7.38, 206.62, 3.62, 20);
-    batcher.slab(steelDarkMat, 0.28, 4.2, 0.28, 207.2, 3.2, 16.8);
-    batcher.slab(steelDarkMat, 0.28, 4.2, 0.28, 207.2, 3.2, 23.2);
-    batcher.beam(steelDarkMat, [207.2, 3.6, 16.8], [207.2, 6.8, 23.2], 0.12, 0.12);
-    batcher.beam(steelDarkMat, [207.2, 6.8, 16.8], [207.2, 3.6, 23.2], 0.12, 0.12);
-    batcher.cyl(reflectorAmberMat, 0.16, 0.24, 206.6, 7.42, 16.8, 'y', { segments: 10 });
-    batcher.cyl(reflectorAmberMat, 0.16, 0.24, 206.6, 7.42, 23.2, 'y', { segments: 10 });
+    batcher.slab(steelDarkMat, 0.3, 4.4, 0.3, wallX - 0.8, 4.5, wallZ - 3.6);
+    batcher.slab(steelDarkMat, 0.3, 4.4, 0.3, wallX - 0.8, 4.5, wallZ + 3.6);
 
-    // (b) Offset Small-Overlap Concrete Barrier Block at X = 208, Z = +52.
-    batcher.slab(concreteMat, 2.6, 2.8, 4.8, 208, 0, 52);
-    batcher.slab(steelDarkMat, 2.75, 0.20, 4.95, 208, 2.78, 52);
-    batcher.slab(crashHazardMat, 0.16, 2.55, 4.45, 206.64, 0.12, 52);
-    batcher.beam(steelDarkMat, [209.2, 2.65, 50.6], [211.2, 0.2, 50.6], 0.28, 0.28);
-    batcher.beam(steelDarkMat, [209.2, 2.65, 53.4], [211.2, 0.2, 53.4], 0.28, 0.28);
-    addSolidBox('pg-offset-crash-wall', 'wall', 'concrete', 2.8, 2.8, 4.8, 208, 1.4, 52);
+    // (b) Offset Small-Overlap Concrete Barrier Block at X = -216, Z = 656.
+    batcher.slab(concreteMat, 2.8, 3.0, 5.2, wallX, 0, 656);
+    batcher.slab(crashHazardMat, 0.16, 2.7, 4.8, wallX - 1.44, 0.15, 656);
+    addSolidBox('pg-offset-crash-wall', 'wall', 'concrete', 3.0, 3.0, 5.2, wallX, 1.5, 656);
 
-    // (c) 3 Heavy Steel-Banded Hazard Crash-Test Pillars (Pole Impact Test Zone).
+    // (c) 4 Heavy Steel-Banded Hazard Crash-Test Pillars (Pole Impact Zone around Z = 650..695).
     const pillarCoords: readonly [number, number][] = [
-      [154, 44],
-      [174, 57],
-      [191, 46],
+      [-288, 652],
+      [-264, 668],
+      [-242, 654],
+      [-252, 686],
     ];
     for (let i = 0; i < pillarCoords.length; i++) {
       const [px, pz] = pillarCoords[i];
-      // Core scuffed hazard cylinder
-      batcher.cyl(crashHazardMat, 0.56, 3.6, px, 1.8, pz, 'y', { segments: 18 });
-      // Heavy bolted dark-steel anchor flange & collar rings
-      batcher.cyl(steelDarkMat, 0.80, 0.14, px, 0.07, pz, 'y', { segments: 16 });
-      batcher.cyl(steelDarkMat, 0.68, 0.22, px, 0.24, pz, 'y', { segments: 16 });
-      batcher.cyl(steelDarkMat, 0.60, 0.16, px, 1.25, pz, 'y', { segments: 16 });
-      batcher.cyl(steelDarkMat, 0.60, 0.16, px, 2.45, pz, 'y', { segments: 16 });
-      batcher.cyl(steelDarkMat, 0.62, 0.18, px, 3.55, pz, 'y', { segments: 16 });
-      batcher.cyl(reflectorAmberMat, 0.58, 0.14, px, 3.70, pz, 'y', { segments: 16 });
+      batcher.cyl(crashHazardMat, 0.56, 3.8, px, 1.9, pz, 'y', { segments: 14 });
+      batcher.cyl(steelDarkMat, 0.78, 0.18, px, 0.09, pz, 'y', { segments: 14 });
+      batcher.cyl(steelDarkMat, 0.62, 0.16, px, 1.4, pz, 'y', { segments: 14 });
+      batcher.cyl(steelDarkMat, 0.62, 0.16, px, 2.7, pz, 'y', { segments: 14 });
+      batcher.cyl(reflectorAmberMat, 0.58, 0.16, px, 3.85, pz, 'y', { segments: 14 });
       const cylCol: CylinderColliderDef = {
         type: 'cylinder',
         id: `pg-crash-pillar-${i}`,
         tag: 'pillar',
         surface: 'metal',
-        position: [px, 1.8, pz],
+        position: [px, 1.9, pz],
         radius: 0.58,
-        halfHeight: 1.8,
+        halfHeight: 1.9,
         friction: 0.5,
         restitution: 0.12,
       };
       colliders.push(cylCol);
     }
 
-    // (d) Smooth Curved Stunt Launch Ramp + Landing Wedge at Z = -24 (exact physics Trimesh preserved!).
-    const launchProfile: [number, number][] = [];
-    const launchSteps = 10;
-    const launchStart = 104;
-    const launchLen = 22;
-    const launchHeight = 2.85;
-    for (let i = 0; i <= launchSteps; i++) {
-      const t = i / launchSteps;
-      launchProfile.push([launchStart + t * launchLen, launchHeight * Math.pow(t, 1.42)]);
-    }
-    const launchBuilt = buildProfilePrism(launchProfile, -24, 10.4, 'pg-launch-ramp', 'ramp', 'concrete');
-    trackGeo(launchBuilt.geometry);
-    const launchMesh = new THREE.Mesh(launchBuilt.geometry, concreteMat);
-    launchMesh.name = 'pg-launch-ramp';
-    launchMesh.castShadow = true;
-    launchMesh.receiveShadow = true;
-    launchMesh.matrixAutoUpdate = false;
-    group.add(launchMesh);
-    colliders.push(launchBuilt.collider);
-
-    // Hazard-striped lip trim + rear steel girder bracing under launch lip
-    batcher.slab(crashHazardMat, 0.42, launchHeight + 0.10, 10.6, launchStart + launchLen + 0.19, 0, -24);
-    batcher.slab(steelDarkMat, 0.35, 0.16, 10.8, launchStart + launchLen + 0.22, launchHeight, -24);
-
-    // Landing down-ramp (X = 148 -> 178)
-    const landProfile: [number, number][] = [
-      [148, 2.25],
-      [152, 2.25],
-      [165, 1.1],
-      [178, 0.0],
+    // (d) 3 Progressive Airfield Stunt Jump Ramps (Small, Medium, Mega) + Landing Ramps!
+    const rampSpecs: readonly {
+      id: string;
+      z: number;
+      startX: number;
+      len: number;
+      width: number;
+      height: number;
+      landStartX: number;
+      landLen: number;
+      landHeight: number;
+    }[] = [
+      { id: 'small', z: 505, startX: -420, len: 16, width: 10.5, height: 1.9, landStartX: -386, landLen: 22, landHeight: 1.55 },
+      { id: 'medium', z: 540, startX: -420, len: 24, width: 11.5, height: 3.2, landStartX: -370, landLen: 30, landHeight: 2.45 },
+      { id: 'mega', z: 576, startX: -420, len: 36, width: 13.5, height: 5.4, landStartX: -338, landLen: 44, landHeight: 3.9 },
     ];
-    const landBuilt = buildProfilePrism(landProfile, -24, 11.4, 'pg-landing-ramp', 'ramp', 'concrete');
-    trackGeo(landBuilt.geometry);
-    const landMesh = new THREE.Mesh(landBuilt.geometry, concreteMat);
-    landMesh.name = 'pg-landing-ramp';
-    landMesh.castShadow = true;
-    landMesh.receiveShadow = true;
-    landMesh.matrixAutoUpdate = false;
-    group.add(landMesh);
-    colliders.push(landBuilt.collider);
-    batcher.slab(crashHazardMat, 0.35, 2.25, 11.5, 147.82, 0, -24);
 
-    // Ramp directional sign beside approach with dual steel posts & backing plate
+    for (const r of rampSpecs) {
+      const launchProfile: [number, number][] = [];
+      const steps = 10;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        launchProfile.push([r.startX + t * r.len, r.height * Math.pow(t, 1.42)]);
+      }
+      const launchBuilt = buildProfilePrism(launchProfile, r.z, r.width, `pg-launch-${r.id}`, 'ramp', 'concrete');
+      trackGeo(launchBuilt.geometry);
+      const launchMesh = new THREE.Mesh(launchBuilt.geometry, concreteMat);
+      launchMesh.name = `pg-launch-${r.id}`;
+      launchMesh.castShadow = true;
+      launchMesh.receiveShadow = true;
+      launchMesh.matrixAutoUpdate = false;
+      group.add(launchMesh);
+      colliders.push(launchBuilt.collider);
+
+      batcher.slab(crashHazardMat, 0.42, r.height + 0.08, r.width + 0.2, r.startX + r.len + 0.19, 0, r.z);
+
+      const landProfile: [number, number][] = [
+        [r.landStartX, r.landHeight],
+        [r.landStartX + 4, r.landHeight],
+        [r.landStartX + r.landLen * 0.55, r.landHeight * 0.48],
+        [r.landStartX + r.landLen, 0],
+      ];
+      const landBuilt = buildProfilePrism(landProfile, r.z, r.width + 1.2, `pg-land-${r.id}`, 'ramp', 'concrete');
+      trackGeo(landBuilt.geometry);
+      const landMesh = new THREE.Mesh(landBuilt.geometry, concreteMat);
+      landMesh.name = `pg-land-${r.id}`;
+      landMesh.castShadow = true;
+      landMesh.receiveShadow = true;
+      landMesh.matrixAutoUpdate = false;
+      group.add(landMesh);
+      colliders.push(landBuilt.collider);
+      batcher.slab(crashHazardMat, 0.35, r.landHeight, r.width + 1.3, r.landStartX - 0.18, 0, r.z);
+    }
+
+    // Stunt ramp signage.
     const rampSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.rampSign, roughness: 0.42 }));
-    const rampSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(4.4, 2.2)), rampSignMat);
-    rampSign.position.set(100, 3.0, -32);
+    const rampSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(5.2, 2.6)), rampSignMat);
+    rampSign.position.set(-428, 3.2, 492);
     rampSign.rotation.y = -Math.PI / 2;
     rampSign.updateMatrix();
     rampSign.matrixAutoUpdate = false;
     group.add(rampSign);
-    batcher.slab(steelDarkMat, 0.10, 2.32, 4.52, 100.08, 1.84, -32);
-    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 100.16, 0, -33.5);
-    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 100.16, 0, -30.5);
+    batcher.slab(steelGalvMat, 0.14, 3.6, 0.14, -427.8, 0, 490.2);
+    batcher.slab(steelGalvMat, 0.14, 3.6, 0.14, -427.8, 0, 493.8);
 
-    // (e) Suspension Rumble & Speed-Bump Strip at Z = -56 (exact physics Trimesh preserved!).
+    const megaSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.megaRampSign, roughness: 0.42 }));
+    const megaSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(5.6, 2.8)), megaSignMat);
+    megaSign.position.set(-428, 3.4, 591);
+    megaSign.rotation.y = -Math.PI / 2;
+    megaSign.updateMatrix();
+    megaSign.matrixAutoUpdate = false;
+    group.add(megaSign);
+    batcher.slab(steelGalvMat, 0.14, 3.8, 0.14, -427.8, 0, 589.2);
+    batcher.slab(steelGalvMat, 0.14, 3.8, 0.14, -427.8, 0, 592.8);
+
+    // (e) Suspension Speed-Bump & Articulation Strip at Z = 880 (X = -460..-320).
     const bumpSpecs: { x: number; z: number; w: number; h: number }[] = [];
     for (let i = 0; i < 8; i++) {
-      bumpSpecs.push({ x: 102 + i * 8.5, z: -56, w: 9.6, h: 0.15 });
+      bumpSpecs.push({ x: -458 + i * 9.5, z: 880, w: 11.2, h: 0.16 });
     }
     for (let i = 0; i < 6; i++) {
-      bumpSpecs.push({ x: 172 + i * 5.2, z: i % 2 === 0 ? -53.8 : -58.2, w: 4.4, h: 0.18 });
+      bumpSpecs.push({ x: -376 + i * 5.8, z: i % 2 === 0 ? 877.4 : 882.6, w: 4.8, h: 0.19 });
     }
 
     const bumpVerts: number[] = [];
@@ -1679,117 +1710,235 @@ export function buildWorldProps(
       indices: new Uint32Array(combinedBumpIdx),
     });
 
-    // (f) Slalom Chicane Beveled Concrete Jersey Barriers at Z = +88 (5 alternating chicane gates).
-    const slalomXs = [106, 130, 154, 178, 202];
-    for (let i = 0; i < slalomXs.length; i++) {
-      const bx = slalomXs[i];
-      const bz = i % 2 === 0 ? 82.5 : 93.5;
-      // 2 joined 3.75m precast New Jersey F-shape concrete segments with visible expansion joint + forklift pockets
-      for (const segOff of [-1.9, 1.9]) {
-        batcher.add(concreteMat, buildJerseyBarrierGeometry(3.72, 1.12, 0.96), bx, 0, bz + segOff);
-        // Dark forklift notch recesses at base
-        for (const notch of [-0.95, 0.95]) {
-          batcher.slab(steelDarkMat, 0.98, 0.11, 0.36, bx, 0.0, bz + segOff + notch);
-        }
-      }
-      // Scuffed hazard top rail & amber reflector markers
-      batcher.slab(crashHazardMat, 0.34, 0.16, 7.56, bx, 1.02, bz);
-      batcher.slab(reflectorAmberMat, 0.38, 0.12, 0.24, bx, 1.14, bz - 3.4);
-      batcher.slab(reflectorAmberMat, 0.38, 0.12, 0.24, bx, 1.14, bz + 3.4);
-      addSolidBox(`pg-slalom-barrier-${i}`, 'barrier', 'concrete', 1.05, 1.15, 7.65, bx, 0.575, bz);
-    }
-
-    const slalomSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.slalomSign, roughness: 0.42 }));
-    const slalomSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(4.4, 2.2)), slalomSignMat);
-    slalomSign.position.set(92, 3.0, 74);
-    slalomSign.rotation.y = -Math.PI / 2;
-    slalomSign.updateMatrix();
-    slalomSign.matrixAutoUpdate = false;
-    group.add(slalomSign);
-    batcher.slab(steelDarkMat, 0.10, 2.32, 4.52, 92.08, 1.84, 74);
-    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 92.16, 0, 72.5);
-    batcher.slab(steelGalvMat, 0.14, 3.4, 0.14, 92.16, 0, 75.5);
-
-    // (g) Crash Test Lab & Glazed Observation Tower at X = 229, Z = -24.
-    batcher.slab(concreteMat, 18.2, 2.5, 36.2, 229, 0, -24);
-    batcher.slab(claddingMat, 18, 7.0, 36, 229, 2.5, -24);
-    batcher.slab(steelDarkMat, 18.8, 1.1, 36.8, 229, 9.5, -24);
-    batcher.slab(accentAmberMat, 18.95, 0.32, 36.95, 229, 9.12, -24);
-    // Vertical structural steel ribs along West elevation facing proving grounds
-    for (let lz = -40; lz <= -8; lz += 6.4) {
-      batcher.slab(steelDarkMat, 0.38, 9.6, 0.38, 219.95, 0, lz);
-    }
-    // Recessed side service bay door at north end of lab
-    batcher.panel(bayDoorMat, 6.2, 4.4, 219.86, 2.2, -35.5, -Math.PI / 2);
-    // Cantilevered Glazed Observation Deck overlooking the ramp & impact wall
-    batcher.slab(steelDarkMat, 8.2, 0.45, 14.8, 222.5, 10.55, -24);
-    batcher.slab(glassWindowMat, 7.5, 3.3, 14.0, 222.5, 11.0, -24);
-    batcher.slab(roofDarkMat, 8.8, 0.65, 15.6, 222.5, 14.3, -24);
-    // Angled steel cantilever support struts under observation deck
-    for (const sz of [-29.5, -24, -18.5]) {
-      batcher.beam(steelDarkMat, [219.9, 8.5, sz], [218.5, 10.65, sz], 0.24, 0.24);
-    }
-    // Rooftop HVAC + telemetry radar tower mast
-    batcher.slab(steelGalvMat, 3.6, 1.4, 4.2, 231, 10.6, -15);
-    batcher.cyl(steelGalvMat, 0.14, 3.8, 224.5, 16.8, -28.5, 'y', { segments: 8 });
-    batcher.cyl(steelGalvMat, 0.72, 0.18, 224.5, 18.4, -28.5, 'x', { segments: 12 });
-    addSolidBox('building-crash-lab', 'building', 'concrete', 18.4, 11, 36.4, 229, 5.5, -24);
+    // (f) Crash Test Lab & Glazed Airfield Control Tower overlooking the entire Stunt Park (X = -172, Z = 555).
+    const labX = -172;
+    const labZ = 555;
+    batcher.slab(concreteMat, 20.2, 2.8, 42.2, labX, 0, labZ);
+    batcher.slab(claddingMat, 20, 7.6, 42, labX, 2.8, labZ);
+    batcher.slab(steelDarkMat, 20.8, 1.1, 42.8, labX, 10.4, labZ);
+    batcher.slab(accentAmberMat, 21.0, 0.35, 43.0, labX, 10.0, labZ);
+    batcher.panel(bayDoorMat, 6.4, 4.5, labX - 10.12, 2.25, labZ - 12, -Math.PI / 2);
+    // Glazed Airfield Control Tower cab.
+    batcher.slab(steelDarkMat, 9.2, 0.5, 16.0, labX - 6.0, 11.5, labZ);
+    batcher.slab(glassWindowMat, 8.4, 3.8, 15.2, labX - 6.0, 12.0, labZ);
+    batcher.slab(roofDarkMat, 9.8, 0.75, 16.6, labX - 6.0, 15.8, labZ);
+    addSolidBox('building-crash-lab', 'building', 'concrete', 20.6, 12, 42.6, labX, 6.0, labZ);
 
     const labSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.crashLabBanner, roughness: 0.4 }));
-    const labSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(16, 3.8)), labSignMat);
-    labSign.position.set(219.65, 7.2, -24);
+    const labSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(18, 4.2)), labSignMat);
+    labSign.position.set(labX - 10.35, 7.6, labZ);
     labSign.rotation.y = -Math.PI / 2;
     labSign.updateMatrix();
     labSign.matrixAutoUpdate = false;
     group.add(labSign);
-    batcher.slab(steelDarkMat, 0.14, 4.0, 16.3, 219.78, 5.2, -24);
 
-    // Proving Grounds North perimeter beveled concrete Jersey barrier wall (Z = -74.5, X = 80..236).
-    const northWallLen = 156;
-    const northSegs = 26;
-    const segLen = northWallLen / northSegs;
-    for (let i = 0; i < northSegs; i++) {
-      const sx = 80 + (i + 0.5) * segLen;
-      batcher.add(concreteMat, buildJerseyBarrierGeometry(segLen - 0.06, 1.32, 1.02), sx, 0, -74.5, [0, Math.PI / 2, 0]);
+    const slalomSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.slalomSign, roughness: 0.42 }));
+    const slalomSign = new THREE.Mesh(trackGeo(new THREE.PlaneGeometry(5.2, 2.6)), slalomSignMat);
+    slalomSign.position.set(-462, 3.1, 760);
+    slalomSign.rotation.y = -Math.PI / 2;
+    slalomSign.updateMatrix();
+    slalomSign.matrixAutoUpdate = false;
+    group.add(slalomSign);
+    batcher.slab(steelGalvMat, 0.14, 3.5, 0.14, -461.8, 0, 758.2);
+    batcher.slab(steelGalvMat, 0.14, 3.5, 0.14, -461.8, 0, 761.8);
+
+    // Precast New Jersey F-shape concrete safety barrier wall protecting the Crash Test Lab & Control Tower.
+    for (let i = 0; i < 12; i++) {
+      const bz = 515 + i * 6.5;
+      batcher.add(concreteMat, buildJerseyBarrierGeometry(6.35, 1.25, 0.98), -192, 0, bz);
     }
-    addSolidBox('pg-north-wall', 'barrier', 'concrete', 156, 1.4, 1.1, 158, 0.7, -74.5);
+    addSolidBox('pg-lab-guard-wall', 'barrier', 'concrete', 1.1, 1.3, 78, -192, 0.65, 551);
+
     flushBatch('structures-proving');
   }
 
   // -------------------------------------------------------------------------
-  // 3. ROADSIDE BUILDINGS & HIGHWAY SERVICE STATION
+  // 2B. STEEL-ARCH PACIFIC COAST BRIDGE (X = -720, Z = -128..+128, deckY = 14.5m)
   // -------------------------------------------------------------------------
   {
-    // Highway Service Station & Pit Canopy along South Straightaway (X = -125, Z = 214..232).
-    batcher.slab(concreteMat, 22.3, 1.8, 11.3, -125, 0, 214);
-    batcher.slab(claddingMat, 22, 4.6, 11, -125, 1.8, 214);
-    batcher.slab(steelDarkMat, 22.8, 0.75, 11.8, -125, 6.4, 214);
-    batcher.slab(accentAmberMat, 22.9, 0.25, 11.9, -125, 6.1, 214);
-    // Front storefront glass + service bay door facing highway (+Z)
-    batcher.slab(steelDarkMat, 10.6, 3.6, 0.28, -130.0, 0.6, 219.55);
-    batcher.panel(glassWindowMat, 10.1, 3.2, -130.0, 2.4, 219.72, 0);
-    batcher.panel(bayDoorMat, 6.6, 4.3, -119.2, 2.15, 219.62, 0);
-    batcher.slab(steelDarkMat, 7.0, 0.30, 0.42, -119.2, 4.3, 219.65);
-    // Rooftop AC unit
-    batcher.slab(steelGalvMat, 2.8, 1.0, 2.2, -129, 7.15, 213.5);
+    const bx = COAST_BRIDGE_BOUNDS.centerX;
+    const deckY = COAST_BRIDGE_BOUNDS.deckY;
+    const spanLen = COAST_BRIDGE_BOUNDS.maxZ - COAST_BRIDGE_BOUNDS.minZ; // 256m
+    const halfW = COAST_BRIDGE_BOUNDS.halfWidth; // 7.4m
+    const deckThick = 1.4;
 
-    // Pit Service Canopy at Z = 232 with structural I-beam columns (exact original collider positions!)
-    batcher.slab(steelDarkMat, 26.4, 0.72, 11.4, -125, 5.2, 232);
-    batcher.slab(accentAmberMat, 26.7, 0.30, 11.7, -125, 5.88, 232);
-    for (const lx of [-133, -125, -117]) {
-      batcher.slab(lampGlowMat, 3.2, 0.08, 0.6, lx, 5.14, 232);
-    }
-    for (const px of [-135, -125, -115]) {
-      addIBeamColumn(batcher, steelDarkMat, concreteMat, px, 0, 232, 5.2, 0.50, 0.65);
-      batcher.slab(accentAmberMat, 0.78, 0.16, 0.78, px, 0.50, 232);
-      addSolidBox(`service-col-${px}`, 'pillar', 'metal', 0.65, 5.2, 0.65, px, 2.6, 232);
-    }
-    addSolidBox('building-service-station', 'building', 'concrete', 22.4, 6.8, 11.4, -125, 3.4, 214);
+    // Reinforced concrete box-girder bridge deck + side parapets.
+    batcher.slab(concreteMat, halfW * 2 + 1.2, deckThick, spanLen + 12, bx, deckY - deckThick, 0);
+    // Solid bridge deck collider (top surface sits at exact deckY = 14.5m!).
+    addSolidBox('coast-bridge-deck', 'road', 'concrete', halfW * 2 + 1.0, deckThick, spanLen + 16, bx, deckY - deckThick * 0.5, 0);
 
-    // Two detailed industrial warehouses framing the valley landscape.
+    // Left & right bridge concrete parapet walls + galvanized steel safety rails (prevents falling into ocean!).
+    for (const side of [-1, 1]) {
+      const rx = bx + side * (halfW + 0.35);
+      batcher.slab(concreteMat, 0.55, 0.95, spanLen + 10, rx, deckY, 0);
+      batcher.slab(steelGalvMat, 0.16, 0.14, spanLen + 10, rx, deckY + 1.15, 0);
+      addSolidBox(`coast-bridge-rail-${side > 0 ? 'E' : 'W'}`, 'barrier', 'concrete', 0.65, 1.35, spanLen + 12, rx, deckY + 0.68, 0);
+    }
+
+    // Massive concrete bridge abutments & submerged ocean piers.
+    for (const pz of [-128, -68, 68, 128]) {
+      batcher.slab(concreteMat, halfW * 2 + 3.2, deckY + 12, 5.2, bx, -12, pz);
+    }
+
+    // Twin dramatic parabolic structural steel arches rising 24m above the bridge deck + vertical hanger cables!
+    const archSegs = 18;
+    const archSpan = 216;
+    const archRise = 24.5;
+    for (const side of [-1, 1]) {
+      const ax = bx + side * (halfW + 0.35);
+      for (let i = 0; i < archSegs; i++) {
+        const u0 = (i / archSegs) * 2 - 1;
+        const u1 = ((i + 1) / archSegs) * 2 - 1;
+        const z0 = u0 * (archSpan * 0.5);
+        const z1 = u1 * (archSpan * 0.5);
+        const y0 = deckY + (1 - u0 * u0) * archRise;
+        const y1 = deckY + (1 - u1 * u1) * archRise;
+        batcher.beam(steelDarkMat, [ax, y0, z0], [ax, y1, z1], 0.95, 0.95);
+        // Vertical steel hanger cable down to deck.
+        if (i > 0 && i < archSegs && y0 > deckY + 2.0) {
+          batcher.cyl(steelGalvMat, 0.11, y0 - deckY, ax, deckY + (y0 - deckY) * 0.5, z0, 'y', { segments: 6 });
+        }
+      }
+    }
+    // Overhead cross-bracing uniting the twin steel arches across the roadway!
+    for (let i = 3; i <= archSegs - 3; i += 2) {
+      const u = (i / archSegs) * 2 - 1;
+      const zc = u * (archSpan * 0.5);
+      const yc = deckY + (1 - u * u) * archRise;
+      if (yc > deckY + 9.0) {
+        batcher.beam(steelDarkMat, [bx - halfW - 0.35, yc, zc], [bx + halfW + 0.35, yc, zc], 0.52, 0.52);
+      }
+    }
+    flushBatch('structures-bridge');
+  }
+
+  // -------------------------------------------------------------------------
+  // 2C. ILLUMINATED 280M CONCRETE MOUNTAIN TUNNEL (Z = -620, X = -160..+120)
+  // -------------------------------------------------------------------------
+  {
+    const tx0 = TUNNEL_BOUNDS.minX;
+    const tx1 = TUNNEL_BOUNDS.maxX;
+    const tcx = (tx0 + tx1) * 0.5; // -20
+    const tLen = tx1 - tx0; // 280m
+    const tcz = TUNNEL_BOUNDS.centerZ; // -620
+    const fy = TUNNEL_BOUNDS.floorY; // 12.0
+    const hw = TUNNEL_BOUNDS.halfWidth; // 10.5
+    const clearH = TUNNEL_BOUNDS.ceilingY - fy; // 8.4m
+
+    // Thick concrete tunnel side walls, angled haunches, and ceiling deck.
+    for (const side of [-1, 1]) {
+      const wz = tcz + side * (hw + 1.2);
+      batcher.slab(concreteMat, tLen, clearH + 1.6, 2.4, tcx, fy - 0.5, wz);
+      // Raised concrete emergency maintenance curb inside tunnel.
+      batcher.slab(concreteMat, tLen, 0.55, 0.85, tcx, fy, tcz + side * (hw - 0.42));
+      // Solid tunnel wall collider.
+      addSolidBox(`tunnel-wall-${side > 0 ? 'S' : 'N'}`, 'wall', 'concrete', tLen, clearH + 2.0, 2.6, tcx, fy + clearH * 0.5, wz);
+    }
+    // Tunnel roof ceiling slab + solid collider.
+    batcher.slab(concreteMat, tLen, 1.8, (hw + 2.4) * 2, tcx, fy + clearH, tcz);
+    addSolidBox('tunnel-ceiling', 'wall', 'concrete', tLen, 2.0, (hw + 2.0) * 2, tcx, fy + clearH + 1.0, tcz);
+
+    // Interior structural concrete vault ribs & warm glowing overhead tunnel light strips (zero GPU point lights!).
+    for (let rx = tx0 + 8; rx <= tx1 - 8; rx += 16) {
+      batcher.slab(steelDarkMat, 0.48, clearH, 0.35, rx, fy, tcz - hw + 0.15);
+      batcher.slab(steelDarkMat, 0.48, clearH, 0.35, rx, fy, tcz + hw - 0.15);
+      batcher.slab(steelDarkMat, 0.48, 0.38, hw * 2, rx, fy + clearH - 0.38, tcz);
+      // Twin warm glowing sodium/LED overhead ceiling light bars!
+      batcher.slab(lampGlowMat, 4.8, 0.12, 0.42, rx, fy + clearH - 0.16, tcz - 4.4);
+      batcher.slab(lampGlowMat, 4.8, 0.12, 0.42, rx, fy + clearH - 0.16, tcz + 4.4);
+    }
+
+    // Architectural concrete portal facades at West (X = -160) & East (X = +120) entrances + SIERRA RIDGE TUNNEL signs.
+    const tunnelSignMat = trackMat(new THREE.MeshStandardMaterial({ map: textures.signs.tunnelPortal, roughness: 0.42 }));
+    const tunnelSignGeo = trackGeo(new THREE.PlaneGeometry(13.5, 3.2));
+    for (const px of [tx0, tx1]) {
+      const dir = px === tx0 ? -1 : 1;
+      batcher.slab(concreteMat, 3.2, 4.2, (hw + 4.5) * 2, px, fy + clearH + 0.4, tcz);
+      batcher.slab(concreteMat, 3.4, clearH + 4.5, 4.2, px, fy - 0.5, tcz - hw - 2.6);
+      batcher.slab(concreteMat, 3.4, clearH + 4.5, 4.2, px, fy - 0.5, tcz + hw + 2.6);
+      batcher.slab(crashHazardMat, 0.2, 3.8, 1.4, px + dir * 1.65, fy + 0.1, tcz - hw - 0.8);
+      batcher.slab(crashHazardMat, 0.2, 3.8, 1.4, px + dir * 1.65, fy + 0.1, tcz + hw + 0.8);
+
+      const pSign = new THREE.Mesh(tunnelSignGeo, tunnelSignMat);
+      pSign.position.set(px + dir * 1.72, fy + clearH + 2.5, tcz);
+      pSign.rotation.y = dir < 0 ? -Math.PI / 2 : Math.PI / 2;
+      pSign.updateMatrix();
+      pSign.matrixAutoUpdate = false;
+      group.add(pSign);
+    }
+    flushBatch('structures-tunnel');
+
+    // Hollow Sculpted Mountain Ridge Overpass Cap arching cleanly over the 280m tunnel roof!
+    const capSegX = 24;
+    const capSegZ = 14;
+    const capW = tLen - 4;
+    const capD = 128;
+    const capGeo = trackGeo(new THREE.PlaneGeometry(capW, capD, capSegX, capSegZ));
+    capGeo.rotateX(-Math.PI / 2);
+    const cPos = capGeo.attributes.position as THREE.BufferAttribute;
+    const cCols = new Float32Array(cPos.count * 3);
+    const cRock = new THREE.Color(0x7c7060);
+    const cGrass = new THREE.Color(0x6b7048);
+    const cTmp = new THREE.Color();
+
+    for (let i = 0; i < cPos.count; i++) {
+      const lx = cPos.getX(i);
+      const lz = cPos.getZ(i);
+      const wx = tcx + lx;
+      const wz = tcz + lz;
+      const nx = lx / (capW * 0.5); // -1..+1 along tunnel length
+      const nz = lz / (capD * 0.5); // -1..+1 across mountain width
+      const edgeZ = Math.abs(nz);
+      const archEnvelope = Math.max(0, 1 - edgeZ * edgeZ);
+      const endTaper = clamp(1 - Math.pow(Math.abs(nx), 4.0) * 0.55, 0.35, 1.0);
+      const ridgeH = Math.sin(wx * 0.035) * 4.5 + Math.cos(wz * 0.045) * 3.2;
+
+      const groundY = terrain.sampleHeight(wx, wz);
+      const roofPeak = fy + clearH + 2.2 + archEnvelope * endTaper * (28 + ridgeH);
+      // Seamlessly stitch north/south skirts into actual terrain while staying cleanly above the tunnel vault!
+      const y = edgeZ > 0.85 ? groundY - 0.8 : Math.max(fy + clearH + 1.6, lerp(groundY - 0.6, roofPeak, Math.pow(archEnvelope, 0.65)));
+      cPos.setXYZ(i, wx, y, wz);
+
+      const rockBlend = clamp((y - 22) / 24, 0.25, 0.92);
+      cTmp.copy(cGrass).lerp(cRock, rockBlend);
+      cCols[i * 3] = cTmp.r;
+      cCols[i * 3 + 1] = cTmp.g;
+      cCols[i * 3 + 2] = cTmp.b;
+    }
+    capGeo.setAttribute('color', new THREE.BufferAttribute(cCols, 3));
+    capGeo.computeVertexNormals();
+    const capMat = trackMat(new THREE.MeshLambertMaterial({ vertexColors: true }));
+    const capMesh = new THREE.Mesh(capGeo, capMat);
+    capMesh.name = 'tunnel-mountain-cap';
+    capMesh.castShadow = false;
+    capMesh.receiveShadow = true;
+    capMesh.matrixAutoUpdate = false;
+    group.add(capMesh);
+  }
+
+  // -------------------------------------------------------------------------
+  // 3. ROADSIDE BUILDINGS, SERVICE STATION & RED-ROCK RALLY ARCH
+  // -------------------------------------------------------------------------
+  {
+    // Highway Service Station & Pit Canopy along South Expressway Straightaway (X = -155, Z = 294..312).
+    batcher.slab(concreteMat, 22.3, 1.8, 11.3, -155, 0, 294);
+    batcher.slab(claddingMat, 22, 4.6, 11, -155, 1.8, 294);
+    batcher.slab(steelDarkMat, 22.8, 0.75, 11.8, -155, 6.4, 294);
+    batcher.slab(accentAmberMat, 22.9, 0.25, 11.9, -155, 6.1, 294);
+    batcher.panel(glassWindowMat, 10.1, 3.2, -160.0, 2.4, 299.72, 0);
+    batcher.panel(bayDoorMat, 6.6, 4.3, -149.2, 2.15, 299.62, 0);
+    batcher.slab(steelDarkMat, 26.4, 0.72, 11.4, -155, 5.2, 312);
+    batcher.slab(accentAmberMat, 26.7, 0.30, 11.7, -155, 5.88, 312);
+    for (const px of [-165, -155, -145]) {
+      addIBeamColumn(batcher, steelDarkMat, concreteMat, px, 0, 312, 5.2, 0.50, 0.65);
+      addSolidBox(`service-col-${px}`, 'pillar', 'metal', 0.65, 5.2, 0.65, px, 2.6, 312);
+    }
+    addSolidBox('building-service-station', 'building', 'concrete', 22.4, 6.8, 11.4, -155, 3.4, 294);
+
+    // Two industrial motorsport warehouses framing the central valley.
     const warehouses: readonly { id: string; x: number; z: number; w: number; h: number; d: number; yaw: number }[] = [
-      { id: 'warehouse-east', x: 295, z: 165, w: 30, h: 10, d: 18, yaw: 0 },
-      { id: 'warehouse-west', x: -190, z: 155, w: 28, h: 9.2, d: 18, yaw: 0.12 },
+      { id: 'warehouse-east', x: 265, z: 245, w: 30, h: 10, d: 18, yaw: 0 },
+      { id: 'warehouse-west', x: -245, z: 220, w: 28, h: 9.2, d: 18, yaw: 0.1 },
     ];
     for (const wh of warehouses) {
       const groundY = terrain.sampleHeight(wh.x, wh.z);
@@ -1798,19 +1947,8 @@ export function buildWorldProps(
         batcher.slab(lightCladdingMat, wh.w, wh.h - 2.2, wh.d, 0, 2.2, 0);
         batcher.slab(roofDarkMat, wh.w + 0.9, 0.85, wh.d + 0.9, 0, wh.h - 0.8, 0);
         batcher.slab(accentAmberMat, wh.w + 1.0, 0.30, wh.d + 1.0, 0, wh.h - 1.35, 0);
-        // Upper clerestory ribbon windows along front & back
-        for (const side of [-1, 1]) {
-          batcher.panel(glassWindowMat, wh.w - 4, 1.6, 0, wh.h - 2.4, side * (wh.d * 0.5 + 0.12), side > 0 ? 0 : Math.PI);
-        }
-        // 2 Recessed loading dock bay doors + steel dock awnings
-        for (const bx of [-wh.w * 0.24, wh.w * 0.24]) {
-          batcher.panel(bayDoorMat, 5.4, 4.2, bx, 1.3, wh.d * 0.5 + 0.18, 0);
-          batcher.slab(steelDarkMat, 6.2, 0.24, 1.8, bx, 3.6, wh.d * 0.5 + 0.95);
-        }
-        // Rooftop exhaust vents
-        for (const vx of [-wh.w * 0.26, 0, wh.w * 0.26]) {
-          batcher.slab(steelGalvMat, 2.0, 1.1, 2.0, vx, wh.h + 0.05, 0);
-        }
+        batcher.panel(bayDoorMat, 5.4, 4.2, -wh.w * 0.24, 1.3, wh.d * 0.5 + 0.18, 0);
+        batcher.panel(bayDoorMat, 5.4, 4.2, wh.w * 0.24, 1.3, wh.d * 0.5 + 0.18, 0);
       });
       addSolidBox(wh.id, 'building', 'concrete', wh.w, wh.h, wh.d, wh.x, groundY + wh.h * 0.5 - 0.8, wh.z, wh.yaw);
     }
@@ -1915,41 +2053,64 @@ export function buildWorldProps(
     }
   };
 
-  addSignGantry('gantry-plaza-highway', 0, 56, 0, 17.5, textures.signs.highwayGantry, true);
-  addSignGantry('gantry-plaza-proving', 58, 20, Math.PI / 2, 18.0, textures.signs.provingEntry, true);
-  addSignGantry('gantry-plaza-canyon', -58, 8, -Math.PI / 2, 15.0, textures.signs.canyonEntry, true);
-  addSignGantry('gantry-highway-straight', -20, 260, Math.PI / 2, 21.5, textures.signs.highwayGantry, true);
+  addSignGantry('gantry-plaza-highway', 0, 68, 0, 18.0, textures.signs.highwayGantry, true);
+  addSignGantry('gantry-plaza-coast', -68, 12, -Math.PI / 2, 16.0, textures.signs.coastGantry, true);
+  addSignGantry('gantry-plaza-canyon', 72, -28, Math.PI * 0.65, 16.0, textures.signs.canyonEntry, true);
+  addSignGantry('gantry-plaza-desert', 68, 18, Math.PI / 2, 16.5, textures.signs.desertGantry, true);
+  addSignGantry('gantry-highway-straight', 0, 340, Math.PI / 2, 22.5, textures.signs.highwayGantry, true);
+  addSignGantry('gantry-airfield-entry', -340, 444, 0, 21.0, textures.signs.provingEntry, true);
+
+  // Align the Red-Rock Rally Stage arch directly onto the dirt rally spline ~45m ahead of the desert spawn
+  // so both legs straddle cleanly outside the 7.2m gravel shoulders with an unobstructed launch lane!
+  const desertRallyRoad = network.roads.find((r) => r.id === 'desert-rally-loop');
+  if (desertRallyRoad && desertRallyRoad.samples.length > 0) {
+    const archSample = desertRallyRoad.samples[Math.floor(desertRallyRoad.samples.length * 0.055)];
+    addSignGantry(
+      'gantry-desert-rally-arch',
+      archSample.x,
+      archSample.z,
+      archSample.heading,
+      19.6,
+      textures.signs.rallyArch,
+      true,
+    );
+  }
 
   // Flush roadside buildings & highway gantries into their own frustum-cullable zone batch.
   flushBatch('structures-roadside');
 
   // -------------------------------------------------------------------------
-  // 5. INSTANCED HIGHWAY & CANYON INFRASTRUCTURE (Guardrails, Lamps, Chevrons, Cones)
+  // 5. INSTANCED HIGHWAY, COAST & ALPINE INFRASTRUCTURE (Guardrails, Lamps, Chevrons)
   // -------------------------------------------------------------------------
   const dummy = new THREE.Object3D();
 
-  // --- Corrugated W-Beam Guardrails + Steel I-Posts + Reflective Delineator Tabs ---
   const railBeamMats: THREE.Matrix4[] = [];
   const railPostMats: THREE.Matrix4[] = [];
   const railReflMats: THREE.Matrix4[] = [];
   let guardrailColliderIndex = 0;
 
   for (const road of network.roads) {
-    if (road.kind !== 'highway' && road.kind !== 'canyon') continue;
+    if (road.kind !== 'highway' && road.kind !== 'canyon' && road.kind !== 'coast') continue;
     const samples = road.samples;
     const step = road.kind === 'highway' ? 3 : 2;
 
     for (let i = 0; i < samples.length - step; i += step) {
       const a = samples[i];
       const b = samples[(i + step) % samples.length];
+
+      // Skip inside Mountain Tunnel and across the Coastal Bridge (solid concrete walls/parapets already exist!).
+      if (isInsideTunnelCoords(a.x, a.y + 1, a.z) || isInsideTunnelCoords(b.x, b.y + 1, b.z)) continue;
+      if (isOnCoastBridgeSpan(a.x, a.z) || isOnCoastBridgeSpan(b.x, b.z)) continue;
+
       if (road.kind === 'highway') {
-        if (Math.abs(a.z - 260) < 16 && (Math.abs(a.x) < 20 || Math.abs(a.x - 160) < 20)) continue;
-        if (Math.abs(a.x + 405) < 30 && Math.abs(a.z - 15) < 25) continue;
-        if (Math.abs(a.x + 260) < 35 && Math.abs(a.z + 245) < 35) continue;
+        if (Math.abs(a.z - 340) < 22 && (Math.abs(a.x) < 24 || Math.abs(a.x + 340) < 26 || Math.abs(a.x - 440) < 26)) continue;
+        if (Math.abs(a.x + 575) < 30 && Math.abs(a.z - 175) < 28) continue;
+        if (Math.abs(a.x - 165) < 30 && Math.abs(a.z + 620) < 26) continue;
+        if (Math.abs(a.x + 520) < 35 && Math.abs(a.z + 565) < 30) continue;
       }
 
       const segLen = Math.hypot(b.x - a.x, b.z - a.z);
-      if (segLen < 2 || segLen > 18) continue;
+      if (segLen < 2 || segLen > 20) continue;
 
       const mx = (a.x + b.x) * 0.5;
       const my = (a.y + b.y) * 0.5;
@@ -1959,25 +2120,31 @@ export function buildWorldProps(
       const lx = (b.z - a.z) / segLen;
       const lz = -(b.x - a.x) / segLen;
 
-      const sides = road.kind === 'highway' ? [-1] : a.y > 3.5 ? [-1, 1] : [];
+      const sides =
+        road.kind === 'highway'
+          ? [-1]
+          : road.kind === 'coast'
+            ? [1]
+            : a.y > 7.5
+              ? [-1, 1]
+              : [];
+
       for (const side of sides) {
-        const offset = (road.halfWidth + 0.85) * side;
+        const offset = (road.halfWidth + 0.9) * side;
         const rx = mx + lx * offset;
         const rz = mz + lz * offset;
 
         const q = network.query(rx, rz);
         if (q.onRoad) continue;
 
-        // Corrugated W-beam rail facing inward toward the lane (strictly positive scale -> valid outward winding!)
         dummy.position.set(rx, my + 0.64, rz);
         const beamYaw = side < 0 ? yaw : yaw + Math.PI;
         const beamPitch = side < 0 ? slopePitch : -slopePitch;
         dummy.rotation.set(beamPitch, beamYaw, 0, 'YXZ');
-        dummy.scale.set(1, 1, segLen + 0.16);
+        dummy.scale.set(1, 1, segLen + 0.18);
         dummy.updateMatrix();
         railBeamMats.push(dummy.matrix.clone());
 
-        // Twin vertical steel I-posts per span (start + midpoint) for authentic highway post spacing (~4m)
         for (const t of [0.0, 0.5]) {
           const px = lerp(a.x, b.x, t) + lx * (offset + side * 0.08);
           const py = lerp(a.y, b.y, t);
@@ -1988,7 +2155,6 @@ export function buildWorldProps(
           dummy.updateMatrix();
           railPostMats.push(dummy.matrix.clone());
 
-          // Reflective amber delineator tab mounted atop every primary post
           if (t === 0.0) {
             dummy.position.set(px, py + 0.87, pz);
             dummy.rotation.set(0, yaw, 0);
@@ -1998,7 +2164,6 @@ export function buildWorldProps(
           }
         }
 
-        // Exact matching static guardrail collider preserved!
         addSolidBox(
           `guardrail-${guardrailColliderIndex++}`,
           'barrier',
@@ -2018,25 +2183,27 @@ export function buildWorldProps(
   if (railBeamMats.length > 0) {
     const beamGeo = trackGeo(buildWBeamGuardrailGeometry());
     addChunkedInstances(group, beamGeo, guardrailBeamMat, 'inst-guardrail-beams', railBeamMats, null, {
-      sectorSize: 320,
+      sectorSize: 360,
       castShadow: true,
       receiveShadow: true,
     });
 
     const postGeo = trackGeo(buildGuardrailPostGeometry());
     addChunkedInstances(group, postGeo, vertexMetalMat, 'inst-guardrail-posts', railPostMats, null, {
-      sectorSize: 320,
+      sectorSize: 360,
       castShadow: false,
       receiveShadow: false,
-      maxDistance: 300,
+      maxDistance: 280,
       cullList: cullableSectors,
     });
 
     const reflGeo = trackGeo(new THREE.BoxGeometry(0.06, 0.13, 0.09));
     addChunkedInstances(group, reflGeo, reflectorAmberMat, 'inst-guardrail-reflectors', railReflMats, null, {
-      sectorSize: 2000,
+      sectorSize: 400,
       castShadow: false,
       receiveShadow: false,
+      maxDistance: 260,
+      cullList: cullableSectors,
     });
   }
 
@@ -2153,20 +2320,28 @@ export function buildWorldProps(
     });
   }
 
-  // --- Tapered Galvanized Cobra-Head Streetlamps (single draw call per part, zero shadow pass) ---
+  // --- Tapered Galvanized Cobra-Head Streetlamps (spatially chunked, zero shadow pass) ---
   const lampTransforms: { x: number; y: number; z: number; yaw: number }[] = [];
-  for (let x = -280; x <= 280; x += 38) {
-    if (Math.abs(x) < 16 || Math.abs(x - 160) < 16) continue;
-    lampTransforms.push({ x, y: terrain.sampleHeight(x, 249.5), z: 249.5, yaw: 0 });
-    lampTransforms.push({ x, y: terrain.sampleHeight(x, 270.5), z: 270.5, yaw: Math.PI });
+  // 1.36 km Valley Expressway Straightaway (Z = 340)
+  for (let x = -640; x <= 640; x += 56) {
+    if (Math.abs(x) < 22 || Math.abs(x + 340) < 24 || Math.abs(x - 440) < 24) continue;
+    lampTransforms.push({ x, y: terrain.sampleHeight(x, 329.0), z: 329.0, yaw: 0 });
+    lampTransforms.push({ x, y: terrain.sampleHeight(x, 351.0), z: 351.0, yaw: Math.PI });
   }
-  for (let z = 68; z <= 232; z += 34) {
-    lampTransforms.push({ x: -9.5, y: terrain.sampleHeight(-9.5, z), z, yaw: Math.PI / 2 });
-    lampTransforms.push({ x: 9.5, y: terrain.sampleHeight(9.5, z), z, yaw: -Math.PI / 2 });
+  // Plaza South Boulevard
+  for (let z = 82; z <= 310; z += 44) {
+    lampTransforms.push({ x: -10.2, y: terrain.sampleHeight(-10.2, z), z, yaw: Math.PI / 2 });
+    lampTransforms.push({ x: 10.2, y: terrain.sampleHeight(10.2, z), z, yaw: -Math.PI / 2 });
   }
-  for (const x of [95, 145, 195]) {
-    lampTransforms.push({ x, y: 0, z: -72, yaw: 0 });
-    lampTransforms.push({ x, y: 0, z: 118, yaw: Math.PI });
+  // Pacific Coast Steel-Arch Bridge lights
+  for (let z = -108; z <= 108; z += 36) {
+    lampTransforms.push({ x: COAST_BRIDGE_BOUNDS.centerX - 7.1, y: COAST_BRIDGE_BOUNDS.deckY, z, yaw: Math.PI / 2 });
+    lampTransforms.push({ x: COAST_BRIDGE_BOUNDS.centerX + 7.1, y: COAST_BRIDGE_BOUNDS.deckY, z, yaw: -Math.PI / 2 });
+  }
+  // Airfield Crash Arena perimeter lights
+  for (const x of [-490, -400, -310, -220]) {
+    lampTransforms.push({ x, y: 0, z: 446, yaw: 0 });
+    lampTransforms.push({ x, y: 0, z: 932, yaw: Math.PI });
   }
 
   if (lampTransforms.length > 0) {
@@ -2184,22 +2359,20 @@ export function buildWorldProps(
       lampMats.push(dummy.matrix.clone());
     }
     addChunkedInstances(group, lampGeos.structure, vertexMetalMat, 'inst-lamp-structures', lampMats, null, {
-      sectorSize: 2000,
+      sectorSize: 400,
       castShadow: false,
       receiveShadow: false,
     });
     addChunkedInstances(group, lampGeos.lens, lampGlowMat, 'inst-lamp-lenses', lampMats, null, {
-      sectorSize: 2000,
+      sectorSize: 400,
       castShadow: false,
       receiveShadow: false,
     });
   }
 
-  // --- Rubber-Base Reflective Traffic Cones (single draw call, no shadow pass, distance-culled) ---
+  // Static reflective lane cones flanking airfield target runway (knockable cones are handled in dynamicProps.ts!).
   const conePositions: [number, number][] = [];
-  for (let x = 96; x <= 212; x += 12) conePositions.push([x, 76.4], [x, 99.6]);
-  for (let x = 96; x <= 186; x += 18) conePositions.push([x, 12.6], [x, 27.4]);
-  for (let x = 88; x <= 102; x += 7) conePositions.push([x, -30.4], [x, -17.6]);
+  for (let x = -480; x <= -240; x += 24) conePositions.push([x, 608.8], [x, 631.2]);
 
   if (conePositions.length > 0) {
     const coneGeo = trackGeo(buildTrafficConeGeometry());
@@ -2213,7 +2386,7 @@ export function buildWorldProps(
       coneMats.push(dummy.matrix.clone());
     }
     addChunkedInstances(group, coneGeo, vertexPolymerMat, 'inst-traffic-cones', coneMats, null, {
-      sectorSize: 2000,
+      sectorSize: 360,
       castShadow: false,
       receiveShadow: false,
       maxDistance: 240,
@@ -2222,7 +2395,7 @@ export function buildWorldProps(
   }
 
   // -------------------------------------------------------------------------
-  // 6. REALISTIC INSTANCED BOTANICAL TREES, WILD GRASS, SAGEBRUSH & CANYON BOULDERS
+  // 6. MULTI-BIOME INSTANCED BOTANICAL TREES, JOSHUA TREES, GRASS, SHRUBS & BOULDERS
   // -------------------------------------------------------------------------
   const rand = seededRandom(4242);
 
@@ -2263,38 +2436,41 @@ export function buildWorldProps(
 
   const pineList: TreeTransform[] = [];
   const oakList: TreeTransform[] = [];
+  const joshuaList: TreeTransform[] = [];
   const grassList: GroundTuft[] = [];
   const shrubList: GroundTuft[] = [];
   const boulderA: BoulderTransform[] = [];
   const boulderB: BoulderTransform[] = [];
 
   const isClearOfBuildings = (x: number, z: number): boolean => {
-    if (x > -62 && x < 62 && z > -60 && z < 58) return false; // Garage Plaza
-    if (x > 66 && x < 252 && z > -86 && z < 130) return false; // Proving Grounds
-    if (x > -154 && x < -96 && z > 198 && z < 246) return false; // Service Station
-    if (x > 270 && x < 320 && z > 146 && z < 184) return false; // East Warehouse
-    if (x > -214 && x < -166 && z > 136 && z < 174) return false; // West Warehouse
+    if (x > -72 && x < 72 && z > -68 && z < 72) return false; // Blend Garage Plaza
+    if (x > -552 && x < -128 && z > 428 && z < 952) return false; // Expanded Crash & Stunt Airfield
+    if (x > -186 && x < -124 && z > 282 && z < 328) return false; // Service Station
+    if (x > 240 && x < 290 && z > 228 && z < 262) return false; // East Warehouse
+    if (x > -270 && x < -220 && z > 202 && z < 238) return false; // West Warehouse
+    if (x > TUNNEL_BOUNDS.minX - 24 && x < TUNNEL_BOUNDS.maxX + 24 && Math.abs(z - TUNNEL_BOUNDS.centerZ) < 68) return false; // Tunnel cap/portals
+    if (x < shorelineXAtZ(z) + 18) return false; // Keep Pacific Ocean & wet tidal sand clear of trees!
     return true;
   };
 
-  // Curated hero pines & California live oaks framing the Garage Plaza backdrop & roadside horizons
   const heroPines: readonly [number, number, number][] = [
-    [-68, -42, 1.25], [-74, -26, 1.08], [-66, -54, 1.18],
-    [62, -52, 1.22], [54, -68, 1.30], [32, -72, 1.15],
-    [-26, -72, 1.28], [-44, -66, 1.10], [10, -76, 1.20],
-    [-82, 48, 1.16], [56, 78, 1.12], [-48, 86, 1.05],
+    [-76, -42, 1.3], [-82, -22, 1.15], [-74, -58, 1.22],
+    [76, -54, 1.28], [62, -74, 1.34], [34, -76, 1.18],
+    [-28, -76, 1.32], [-48, -70, 1.14], [10, -82, 1.24],
+    [-86, 52, 1.18], [62, 86, 1.14], [-52, 94, 1.08],
   ];
   const heroOaks: readonly [number, number, number][] = [
-    [-70, 30, 1.18], [-64, 52, 1.05], [48, 66, 1.14],
-    [-38, 68, 1.08], [-88, -14, 1.22], [28, 92, 1.12],
-    [-58, -72, 1.18], [40, -82, 1.06],
+    [-78, 36, 1.18], [-72, 60, 1.08], [56, 74, 1.14],
+    [-42, 78, 1.10], [-96, -12, 1.24], [32, 98, 1.14],
   ];
 
   const pinePalette = [0xcad4b8, 0xb6c6a2, 0xd4dab8, 0xa8b896, 0xc4cca8];
+  const redwoodPalette = [0x9eb48c, 0x8ea67c, 0xb0c098, 0x829c74];
   const oakPalette = [0xd2d8b4, 0xbbc69e, 0xdbe0ba, 0xaeb992, 0xc8cfa8];
   const grassPalette = [0xe4d6a8, 0xd4c896, 0xc6be88, 0xeadcae, 0xbab882];
   const shrubPalette = [0x9aa688, 0x8a987b, 0xa9b092, 0x7e8d72, 0xb4b698];
   const rockPalette = [0xd6cdc0, 0xc4baa9, 0xdfd5c5, 0xb8afa2, 0xcec1ae];
+  const redRockPalette = [0xc6744c, 0xb45e3c, 0xd48a5e, 0xa24e32, 0xc87f52];
 
   const makeTreeColor = (palette: readonly number[]) =>
     new THREE.Color(palette[Math.floor(rand() * palette.length)]).offsetHSL(
@@ -2304,8 +2480,7 @@ export function buildWorldProps(
     );
 
   for (const [hx, hz, hs] of heroPines) {
-    if (!isClearOfBuildings(hx, hz)) continue;
-    if (network.query(hx, hz).distance < 9.5) continue;
+    if (!isClearOfBuildings(hx, hz) || network.query(hx, hz).distance < 10.5) continue;
     pineList.push({
       x: hx,
       y: terrain.sampleHeight(hx, hz) - 0.15,
@@ -2313,14 +2488,13 @@ export function buildWorldProps(
       sx: hs * (0.94 + rand() * 0.14),
       sy: hs * (0.96 + rand() * 0.18),
       yaw: rand() * Math.PI * 2,
-      leanX: (rand() - 0.5) * 0.06,
-      leanZ: (rand() - 0.5) * 0.06,
+      leanX: (rand() - 0.5) * 0.05,
+      leanZ: (rand() - 0.5) * 0.05,
       color: makeTreeColor(pinePalette),
     });
   }
   for (const [hx, hz, hs] of heroOaks) {
-    if (!isClearOfBuildings(hx, hz)) continue;
-    if (network.query(hx, hz).distance < 10.5) continue;
+    if (!isClearOfBuildings(hx, hz) || network.query(hx, hz).distance < 11.5) continue;
     oakList.push({
       x: hx,
       y: terrain.sampleHeight(hx, hz) - 0.15,
@@ -2334,116 +2508,123 @@ export function buildWorldProps(
     });
   }
 
-  // Scatter ~315 coastal pines across canyon slopes, valley perimeter & mountain foothills
-  for (let attempt = 0; attempt < 1250 && pineList.length < 315; attempt++) {
-    const x = (rand() * 2 - 1) * 510;
-    const z = (rand() * 2 - 1) * 510;
+  // Scatter ~450 Coastal Pines & Towering Alpine Redwoods (heavily clustered in North-East Alpine biome & valley hills, skipping Desert!).
+  for (let attempt = 0; attempt < 2600 && pineList.length < 450; attempt++) {
+    const biasAlpine = attempt < 1100;
+    const x = biasAlpine ? 110 + rand() * 940 : -760 + rand() * 1820;
+    const z = biasAlpine ? -1020 + rand() * 940 : -1020 + rand() * 1980;
     if (!isClearOfBuildings(x, z)) continue;
+    if (desertBiomeWeight(x, z) > 0.32) continue; // Keep pines out of red-rock desert
     const q = network.query(x, z);
-    if (q.distance < 10.5) continue;
+    if (q.distance < 12.5) continue;
     const y = terrain.sampleHeight(x, z);
-    if (y > 46) continue;
-    const baseS = 0.82 + rand() * 0.82;
+    if (y < OCEAN_LEVEL + 4.5 || y > 92) continue;
+
+    const inAlpine = alpineBiomeWeight(x, z) > 0.35;
+    const baseS = inAlpine ? 1.22 + rand() * 0.92 : 0.85 + rand() * 0.85;
     pineList.push({
       x,
-      y: y - 0.15,
+      y: y - 0.25,
       z,
       sx: baseS * (0.88 + rand() * 0.24),
-      sy: baseS * (0.92 + rand() * 0.30),
+      sy: baseS * (inAlpine ? 1.05 + rand() * 0.35 : 0.92 + rand() * 0.28),
       yaw: rand() * Math.PI * 2,
-      leanX: (rand() - 0.5) * 0.08,
-      leanZ: (rand() - 0.5) * 0.08,
-      color: makeTreeColor(pinePalette),
+      leanX: (rand() - 0.5) * 0.07,
+      leanZ: (rand() - 0.5) * 0.07,
+      color: makeTreeColor(inAlpine ? redwoodPalette : pinePalette),
     });
   }
 
-  // Scatter ~155 California Live Oaks across valley meadows, plaza outskirts & lower foothills
-  for (let attempt = 0; attempt < 780 && oakList.length < 155; attempt++) {
-    const x = (rand() * 2 - 1) * 455;
-    const z = (rand() * 2 - 1) * 455;
+  // Scatter ~185 California Live Oaks across coastal valley meadows & lower foothills (out of desert/ocean).
+  for (let attempt = 0; attempt < 1300 && oakList.length < 185; attempt++) {
+    const x = -740 + rand() * 1400;
+    const z = -660 + rand() * 1300;
     if (!isClearOfBuildings(x, z)) continue;
+    if (desertBiomeWeight(x, z) > 0.28 || alpineBiomeWeight(x, z) > 0.65) continue;
     const q = network.query(x, z);
-    if (q.distance < 11.5) continue;
+    if (q.distance < 13.0) continue;
     const y = terrain.sampleHeight(x, z);
-    if (y > 16) continue;
-    const baseS = 0.86 + rand() * 0.72;
+    if (y < OCEAN_LEVEL + 5.0 || y > 26) continue;
+    const baseS = 0.88 + rand() * 0.78;
     oakList.push({
       x,
-      y: y - 0.15,
+      y: y - 0.18,
       z,
       sx: baseS * (0.92 + rand() * 0.24),
       sy: baseS * (0.86 + rand() * 0.20),
       yaw: rand() * Math.PI * 2,
-      leanX: (rand() - 0.5) * 0.07,
-      leanZ: (rand() - 0.5) * 0.07,
+      leanX: (rand() - 0.5) * 0.06,
+      leanZ: (rand() - 0.5) * 0.06,
       color: makeTreeColor(oakPalette),
     });
   }
 
-  // Scatter ~165 sculpted stratified sandstone/granite boulders (clustered naturally on canyon hills & slopes)
-  for (let attempt = 0; attempt < 760 && boulderA.length + boulderB.length < 165; attempt++) {
-    const x = (rand() * 2 - 1) * 495;
-    const z = (rand() * 2 - 1) * 495;
+  // Scatter ~95 Southwestern Desert Joshua Trees across the South-East Red-Rock Desert!
+  for (let attempt = 0; attempt < 750 && joshuaList.length < 95; attempt++) {
+    const x = 220 + rand() * 880;
+    const z = 370 + rand() * 720;
+    if (!isClearOfBuildings(x, z)) continue;
+    if (desertBiomeWeight(x, z) < 0.35) continue;
+    const q = network.query(x, z);
+    if (q.distance < 11.5) continue;
+    const y = terrain.sampleHeight(x, z);
+    if (y > 24) continue; // Keep off vertical mesa cliff walls
+    const baseS = 0.85 + rand() * 0.75;
+    joshuaList.push({
+      x,
+      y: y - 0.15,
+      z,
+      sx: baseS,
+      sy: baseS * (0.92 + rand() * 0.28),
+      yaw: rand() * Math.PI * 2,
+      leanX: (rand() - 0.5) * 0.08,
+      leanZ: (rand() - 0.5) * 0.08,
+      color: new THREE.Color(0x6f7c4f).offsetHSL((rand() - 0.5) * 0.03, 0, (rand() - 0.5) * 0.08),
+    });
+  }
+
+  // Scatter ~220 sculpted boulders (stratified granite in Alpine/Coast, terracotta red-rock in Desert!).
+  for (let attempt = 0; attempt < 1200 && boulderA.length + boulderB.length < 220; attempt++) {
+    const x = -780 + rand() * 1840;
+    const z = -1020 + rand() * 2040;
     if (!isClearOfBuildings(x, z)) continue;
     const q = network.query(x, z);
-    if (q.distance < 7.2) continue;
+    if (q.distance < 9.5) continue;
     const y = terrain.sampleHeight(x, z);
-    if (y < 1.8 && rand() < 0.72) continue;
+    if (y < OCEAN_LEVEL + 1.5) continue;
+    const inDesert = desertBiomeWeight(x, z) > 0.35;
+    if (!inDesert && y < 3.0 && rand() < 0.65) continue;
 
-    const base = 1.05 + rand() * 2.75;
-    const sx = base * (0.82 + rand() * 0.62);
-    const sy = base * (0.52 + rand() * 0.52);
-    const sz = base * (0.82 + rand() * 0.62);
+    const base = 1.2 + rand() * 3.4;
+    const sx = base * (0.85 + rand() * 0.65);
+    const sy = base * (0.55 + rand() * 0.55);
+    const sz = base * (0.85 + rand() * 0.65);
     const target = (boulderA.length + boulderB.length) % 2 === 0 ? boulderA : boulderB;
-    const rCol = makeTreeColor(rockPalette);
+    const rCol = makeTreeColor(inDesert ? redRockPalette : rockPalette);
     target.push({
       x,
-      y: y - sy * 0.32,
+      y: y - sy * 0.34,
       z,
       sx,
       sy,
       sz,
-      rx: (rand() - 0.5) * 0.45,
+      rx: (rand() - 0.5) * 0.4,
       ry: rand() * Math.PI * 2,
-      rz: (rand() - 0.5) * 0.45,
+      rz: (rand() - 0.5) * 0.4,
       color: rCol,
     });
-
-    // Occasional smaller satellite rock tucked right beside hero outcrop
-    if (base > 2.0 && rand() < 0.45 && boulderA.length + boulderB.length < 165) {
-      const ang = rand() * Math.PI * 2;
-      const ox = x + Math.cos(ang) * (sx * 0.9 + 0.8);
-      const oz = z + Math.sin(ang) * (sz * 0.9 + 0.8);
-      if (isClearOfBuildings(ox, oz) && network.query(ox, oz).distance >= 5.5) {
-        const sub = base * (0.38 + rand() * 0.25);
-        const subSy = sub * (0.55 + rand() * 0.4);
-        const other = target === boulderA ? boulderB : boulderA;
-        other.push({
-          x: ox,
-          y: terrain.sampleHeight(ox, oz) - subSy * 0.34,
-          z: oz,
-          sx: sub * (0.85 + rand() * 0.4),
-          sy: subSy,
-          sz: sub * (0.85 + rand() * 0.4),
-          rx: (rand() - 0.5) * 0.5,
-          ry: rand() * Math.PI * 2,
-          rz: (rand() - 0.5) * 0.5,
-          color: rCol.clone().multiplyScalar(0.94),
-        });
-      }
-    }
   }
 
-  // Scatter ~340 California sagebrush / chaparral shrubs along canyon embankments, boulders & meadows
-  for (let attempt = 0; attempt < 1100 && shrubList.length < 340; attempt++) {
-    const x = (rand() * 2 - 1) * 480;
-    const z = (rand() * 2 - 1) * 480;
+  // Scatter ~380 California sagebrush & dry desert scrub shrubs (distance-culled at 260m).
+  for (let attempt = 0; attempt < 1500 && shrubList.length < 380; attempt++) {
+    const x = -760 + rand() * 1820;
+    const z = -960 + rand() * 1940;
     if (!isClearOfBuildings(x, z)) continue;
     const q = network.query(x, z);
-    if (q.distance < 3.6) continue;
+    if (q.distance < 5.0) continue;
     const y = terrain.sampleHeight(x, z);
-    if (y > 32) continue;
-    const s = 0.72 + rand() * 0.85;
+    if (y < OCEAN_LEVEL + 4.0 || y > 58) continue;
+    const s = 0.78 + rand() * 0.92;
     shrubList.push({
       x,
       y: y - 0.10,
@@ -2455,66 +2636,46 @@ export function buildWorldProps(
     });
   }
 
-  // Scatter ~780 coastal wild grass & oat tufts:
-  // (1) Roadside verge ribbons along highway, canyon & connectors (outside gravel shoulder: distance >= 2.6m)
+  // Scatter ~820 coastal wild grass tufts along road verges & valley meadows (distance-culled at 220m).
   for (const road of network.roads) {
-    const step = road.kind === 'canyon' ? 2 : 3;
-    for (let i = 0; i < road.samples.length && grassList.length < 440; i += step) {
+    const step = road.kind === 'canyon' || road.kind === 'coast' ? 3 : 4;
+    for (let i = 0; i < road.samples.length && grassList.length < 520; i += step) {
       const s = road.samples[i];
+      if (isOnCoastBridgeSpan(s.x, s.z) || isInsideTunnelCoords(s.x, s.y + 1, s.z)) continue;
       const lx = s.tz;
       const lz = -s.tx;
       for (const side of [-1, 1]) {
-        if (rand() < 0.34) continue;
-        const distOut = s.halfWidth + 3.2 + rand() * 8.2;
-        const gx = s.x + lx * side * distOut + (rand() - 0.5) * 2.2;
-        const gz = s.z + lz * side * distOut + (rand() - 0.5) * 2.2;
+        if (rand() < 0.42) continue;
+        const distOut = s.halfWidth + 4.4 + rand() * 9.5;
+        const gx = s.x + lx * side * distOut + (rand() - 0.5) * 2.4;
+        const gz = s.z + lz * side * distOut + (rand() - 0.5) * 2.4;
         if (!isClearOfBuildings(gx, gz)) continue;
         const q = network.query(gx, gz);
-        if (q.onRoad || q.distance < 3.0) continue;
+        if (q.onRoad || q.distance < 4.2) continue;
         const gy = terrain.sampleHeight(gx, gz);
-        if (gy > 26) continue;
-        const sc = 0.80 + rand() * 0.78;
+        if (gy < OCEAN_LEVEL + 4.5 || gy > 68) continue;
+        const sc = 0.82 + rand() * 0.8;
         grassList.push({
           x: gx,
           y: gy - 0.06,
           z: gz,
-          sx: sc * (0.90 + rand() * 0.35),
-          sy: sc * (0.78 + rand() * 0.45),
+          sx: sc * (0.9 + rand() * 0.35),
+          sy: sc * (0.8 + rand() * 0.45),
           yaw: rand() * Math.PI * 2,
           color: makeTreeColor(grassPalette),
         });
       }
     }
   }
-
-  // (2) Ground-anchoring grass tufts clustered organically around oak & pine trunks + valley meadows
-  for (let i = 0; i < oakList.length && grassList.length < 620; i++) {
-    const t = oakList[i];
-    if (rand() < 0.3) continue;
-    const ang = rand() * Math.PI * 2;
-    const r = 0.9 + rand() * 2.1;
-    const gx = t.x + Math.cos(ang) * r;
-    const gz = t.z + Math.sin(ang) * r;
-    if (!isClearOfBuildings(gx, gz) || network.query(gx, gz).distance < 3.1) continue;
-    const sc = 0.85 + rand() * 0.70;
-    grassList.push({
-      x: gx,
-      y: terrain.sampleHeight(gx, gz) - 0.06,
-      z: gz,
-      sx: sc,
-      sy: sc * (0.85 + rand() * 0.35),
-      yaw: rand() * Math.PI * 2,
-      color: makeTreeColor(grassPalette),
-    });
-  }
-  for (let attempt = 0; attempt < 500 && grassList.length < 780; attempt++) {
-    const x = (rand() * 2 - 1) * 440;
-    const z = (rand() * 2 - 1) * 440;
+  for (let attempt = 0; attempt < 700 && grassList.length < 820; attempt++) {
+    const x = -720 + rand() * 1480;
+    const z = -660 + rand() * 1380;
     if (!isClearOfBuildings(x, z)) continue;
+    if (desertBiomeWeight(x, z) > 0.45) continue;
     const q = network.query(x, z);
-    if (q.distance < 3.1) continue;
+    if (q.distance < 4.4) continue;
     const y = terrain.sampleHeight(x, z);
-    if (y > 22) continue;
+    if (y < OCEAN_LEVEL + 4.5 || y > 35) continue;
     const sc = 0.85 + rand() * 0.85;
     grassList.push({
       x,
@@ -2527,7 +2688,7 @@ export function buildWorldProps(
     });
   }
 
-  // --- Instantiate Coastal Pines (spatially chunked for aggressive frustum & shadow culling!) ---
+  // --- Instantiate Coastal Pines & Redwoods (340m spatial sectors!) ---
   if (pineList.length > 0) {
     const pineGeos = buildCoastalPineGeometries();
     trackGeo(pineGeos.trunk);
@@ -2546,20 +2707,18 @@ export function buildWorldProps(
     }
 
     addChunkedInstances(group, pineGeos.trunk, barkMat, 'inst-pine-trunks', pineMats, null, {
-      sectorSize: 320,
+      sectorSize: 340,
       castShadow: true,
       receiveShadow: true,
     });
-    // Canopy keeps castShadow on 320m sectors (only nearby sectors enter the 60m shadow frustum),
-    // while receiveShadow=false eliminates 9-tap PCF lookups & self-shadow card acne on overdrawn needles!
     addChunkedInstances(group, pineGeos.canopy, pineCanopyMat, 'inst-pine-canopy', pineMats, pineColors, {
-      sectorSize: 320,
+      sectorSize: 340,
       castShadow: true,
       receiveShadow: false,
     });
   }
 
-  // --- Instantiate California Live Oaks (spatially chunked!) ---
+  // --- Instantiate California Live Oaks (340m spatial sectors!) ---
   if (oakList.length > 0) {
     const oakGeos = buildCaliforniaOakGeometries();
     trackGeo(oakGeos.trunk);
@@ -2578,14 +2737,73 @@ export function buildWorldProps(
     }
 
     addChunkedInstances(group, oakGeos.trunk, barkMat, 'inst-oak-trunks', oakMats, null, {
-      sectorSize: 320,
+      sectorSize: 340,
       castShadow: true,
       receiveShadow: true,
     });
     addChunkedInstances(group, oakGeos.canopy, oakCanopyMat, 'inst-oak-canopy', oakMats, oakColors, {
-      sectorSize: 320,
+      sectorSize: 340,
       castShadow: true,
       receiveShadow: false,
+    });
+  }
+
+  // --- Instantiate Desert Joshua Trees (lightweight forked silhouettes, zero shadow cost!) ---
+  if (joshuaList.length > 0) {
+    const jParts: THREE.BufferGeometry[] = [];
+    const trunk = buildTaperedBranchTube(
+      [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.08, 1.8, 0.04), new THREE.Vector3(-0.04, 3.4, -0.05)],
+      [0.24, 0.19, 0.13],
+      6,
+      0.5,
+      0.65,
+      0.92,
+    );
+    jParts.push(trunk);
+    const armSpecs: readonly [number, number, number, number][] = [
+      [1.9, 0.9, 0.25, 3.6],
+      [2.2, -0.85, 0.45, 3.8],
+      [2.5, 0.15, -0.85, 4.1],
+    ];
+    for (const [startY, dx, dz, tipY] of armSpecs) {
+      const arm = buildTaperedBranchTube(
+        [
+          new THREE.Vector3(0, startY, 0),
+          new THREE.Vector3(dx * 0.85, startY + 0.25, dz * 0.85),
+          new THREE.Vector3(dx, tipY, dz),
+        ],
+        [0.14, 0.11, 0.08],
+        5,
+        0.5,
+        0.7,
+        0.95,
+      );
+      jParts.push(arm);
+      const tuft = new THREE.DodecahedronGeometry(0.42, 0);
+      tuft.translate(dx, tipY + 0.18, dz);
+      jParts.push(tintGeometry(tuft, 0x627044));
+    }
+    const topTuft = new THREE.DodecahedronGeometry(0.46, 0);
+    topTuft.translate(-0.04, 3.62, -0.05);
+    jParts.push(tintGeometry(topTuft, 0x627044));
+
+    const joshuaGeo = trackGeo(mergeColoredParts(jParts));
+    const joshuaMat = trackMat(new THREE.MeshLambertMaterial({ name: 'desert-joshua', vertexColors: true }));
+    const jMats: THREE.Matrix4[] = [];
+    const jCols: THREE.Color[] = [];
+    for (let i = 0; i < joshuaList.length; i++) {
+      const j = joshuaList[i];
+      dummy.position.set(j.x, j.y, j.z);
+      dummy.rotation.set(j.leanX, j.yaw, j.leanZ, 'YXZ');
+      dummy.scale.set(j.sx, j.sy, j.sx);
+      dummy.updateMatrix();
+      jMats.push(dummy.matrix.clone());
+      jCols.push(j.color);
+    }
+    addChunkedInstances(group, joshuaGeo, joshuaMat, 'inst-joshua-trees', jMats, jCols, {
+      sectorSize: 360,
+      castShadow: false,
+      receiveShadow: true,
     });
   }
 
@@ -2604,10 +2822,10 @@ export function buildWorldProps(
       grassColors.push(g.color);
     }
     addChunkedInstances(group, grassGeo, grassTuftMat, 'inst-grass-tufts', grassMats, grassColors, {
-      sectorSize: 280,
+      sectorSize: 320,
       castShadow: false,
       receiveShadow: false,
-      maxDistance: 210,
+      maxDistance: 220,
       cullList: cullableSectors,
     });
   }
@@ -2626,15 +2844,15 @@ export function buildWorldProps(
       shrubColors.push(s.color);
     }
     addChunkedInstances(group, shrubGeo, oakCanopyMat, 'inst-chaparral-shrubs', shrubMats, shrubColors, {
-      sectorSize: 280,
+      sectorSize: 320,
       castShadow: false,
       receiveShadow: false,
-      maxDistance: 270,
+      maxDistance: 260,
       cullList: cullableSectors,
     });
   }
 
-  // --- Instantiate Stratified Canyon Boulders (spatially chunked!) ---
+  // --- Instantiate Stratified Alpine & Red-Rock Boulders (360m spatial sectors!) ---
   const addBoulderSet = (list: readonly BoulderTransform[], name: string, seed: number, angularity: number) => {
     if (list.length === 0) return;
     const rockGeo = trackGeo(buildSculptedBoulderGeometry(seed, angularity));
@@ -2650,7 +2868,7 @@ export function buildWorldProps(
       rockColors.push(b.color);
     }
     addChunkedInstances(group, rockGeo, boulderMat, name, rockMats, rockColors, {
-      sectorSize: 320,
+      sectorSize: 360,
       castShadow: true,
       receiveShadow: true,
     });

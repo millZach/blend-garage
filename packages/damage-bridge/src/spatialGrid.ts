@@ -3,11 +3,13 @@
  *
  * Allows `RealDamageSimulator.applyImpact()` to skip untouched meshes via O(1) AABB-sphere
  * rejection and visit only the spatial cells intersecting the impact sphere, achieving
- * sub-millisecond impacts on 250k–5M+ vertex meshes.
+ * sub-millisecond to few-millisecond impacts on 250k–5M+ vertex meshes.
  */
 
 const GRID_VERTEX_THRESHOLD = 512;
-const MAX_CELLS_PER_AXIS = 24;
+const MAX_CELLS_PER_AXIS_STANDARD = 24;
+const MAX_CELLS_PER_AXIS_HIGH_POLY = 32; // 32^3 = 32768 <= 65535 (fits in Uint16Array)
+const HIGH_POLY_CELL_THRESHOLD = 80_000;
 
 export class MeshSpatialIndex {
   readonly vertexCount: number;
@@ -31,7 +33,7 @@ export class MeshSpatialIndex {
   /** Flat array of vertex indices (0 .. vertexCount - 1) grouped by grid cell. */
   readonly cellVertices: Uint32Array;
 
-  constructor(restPositions: Float32Array, targetCellSize = 0.25) {
+  constructor(restPositions: Float32Array, targetCellSize = 0.22) {
     const vertexCount = Math.floor(restPositions.length / 3);
     this.vertexCount = vertexCount;
 
@@ -95,14 +97,18 @@ export class MeshSpatialIndex {
       return;
     }
 
+    const maxCellsPerAxis =
+      vertexCount >= HIGH_POLY_CELL_THRESHOLD
+        ? MAX_CELLS_PER_AXIS_HIGH_POLY
+        : MAX_CELLS_PER_AXIS_STANDARD;
     const safeCellSize = Math.max(0.05, targetCellSize);
     const spanX = Math.max(1e-4, maxX - minX);
     const spanY = Math.max(1e-4, maxY - minY);
     const spanZ = Math.max(1e-4, maxZ - minZ);
 
-    const nx = Math.min(MAX_CELLS_PER_AXIS, Math.max(1, Math.ceil(spanX / safeCellSize)));
-    const ny = Math.min(MAX_CELLS_PER_AXIS, Math.max(1, Math.ceil(spanY / safeCellSize)));
-    const nz = Math.min(MAX_CELLS_PER_AXIS, Math.max(1, Math.ceil(spanZ / safeCellSize)));
+    const nx = Math.min(maxCellsPerAxis, Math.max(1, Math.ceil(spanX / safeCellSize)));
+    const ny = Math.min(maxCellsPerAxis, Math.max(1, Math.ceil(spanY / safeCellSize)));
+    const nz = Math.min(maxCellsPerAxis, Math.max(1, Math.ceil(spanZ / safeCellSize)));
     const totalCells = nx * ny * nz;
 
     const invCellX = nx / spanX;
@@ -113,7 +119,7 @@ export class MeshSpatialIndex {
     const maxIy = ny - 1;
     const maxIz = nz - 1;
 
-    // Pass 1: count vertices per cell (store cell id in Uint16Array since totalCells <= 24^3 = 13824).
+    // Pass 1: count vertices per cell (Uint16Array safe since totalCells <= 32^3 = 32768).
     const counts = new Uint32Array(totalCells);
     const vertexCells = new Uint16Array(vertexCount);
 
@@ -178,4 +184,75 @@ export class MeshSpatialIndex {
 
     return dx * dx + dy * dy + dz * dz <= radius * radius;
   }
+
+  /** Fast O(1) AABB-box intersection test against the mesh rest bounds. */
+  overlapsBox(
+    bMinX: number,
+    bMinY: number,
+    bMinZ: number,
+    bMaxX: number,
+    bMaxY: number,
+    bMaxZ: number,
+  ): boolean {
+    if (!this.valid) return false;
+    return (
+      this.maxX >= bMinX &&
+      this.minX <= bMaxX &&
+      this.maxY >= bMinY &&
+      this.minY <= bMaxY &&
+      this.maxZ >= bMinZ &&
+      this.minZ <= bMaxZ
+    );
+  }
+}
+
+/**
+ * Compact CSR vertex -> incident triangle adjacency index built lazily on first impact
+ * so local face-normal recomputation runs in O(k) over only mutated vertices.
+ */
+export interface VertexTriangleAdjacency {
+  /** Length = vertexCount + 1. Vertex `v` is incident to triangles `triIndices[triOffsets[v] .. triOffsets[v + 1] - 1]`. */
+  triOffsets: Uint32Array;
+  /** Flat array of triangle numbers (0 .. triCount - 1). */
+  triIndices: Uint32Array;
+}
+
+export function buildVertexTriangleAdjacency(
+  vertexCount: number,
+  indices: Uint16Array | Uint32Array,
+): VertexTriangleAdjacency {
+  const triCount = Math.floor(indices.length / 3);
+  const counts = new Uint32Array(vertexCount);
+
+  for (let t = 0; t < triCount; t++) {
+    const base = t * 3;
+    const a = indices[base];
+    const b = indices[base + 1];
+    const c = indices[base + 2];
+    if (a < vertexCount) counts[a]++;
+    if (b < vertexCount) counts[b]++;
+    if (c < vertexCount) counts[c]++;
+  }
+
+  const triOffsets = new Uint32Array(vertexCount + 1);
+  let sum = 0;
+  for (let v = 0; v < vertexCount; v++) {
+    triOffsets[v] = sum;
+    sum += counts[v];
+  }
+  triOffsets[vertexCount] = sum;
+
+  const cursors = new Uint32Array(triOffsets.subarray(0, vertexCount));
+  const triIndices = new Uint32Array(sum);
+  for (let t = 0; t < triCount; t++) {
+    const base = t * 3;
+    const a = indices[base];
+    const b = indices[base + 1];
+    const c = indices[base + 2];
+    if (a < vertexCount) triIndices[cursors[a]++] = t;
+    if (b < vertexCount) triIndices[cursors[b]++] = t;
+    if (c < vertexCount) triIndices[cursors[c]++] = t;
+  }
+
+  return { triOffsets, triIndices };
 }
