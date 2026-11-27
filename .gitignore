@@ -1,0 +1,16 @@
+node_modules/
+**/dist/
+**/dist-pages/
+.vite/
+*.tsbuildinfo
+cars/incoming/*.blend
+cars/incoming/*.blend1
+cars/imported-cache/
+checkpoints/
+*.log
+*.blend1
+*.blend2
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

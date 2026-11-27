@@ -1,0 +1,217 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
+
+  /* Powder-coated steel of the tool chest */
+  --color-steel-950: #0e1011;
+  --color-steel-900: #15181a;
+  --color-steel-850: #1a1d20;
+  --color-steel-800: #23272b;
+  --color-steel-700: #2e3338;
+  --color-steel-600: #3a4046;
+  --color-steel-500: #4f565d;
+  /* Brushed aluminum trim and text */
+  --color-alu-50: #f3f4f5;
+  --color-alu-200: #dde0e3;
+  --color-alu-300: #cdd2d7;
+  --color-alu-400: #aab1b8;
+  --color-alu-500: #8d959d;
+  /* Tool-chest red, lift yellow, paper tags */
+  --color-chest-400: #e2382c;
+  --color-chest-500: #d12a1f;
+  --color-chest-700: #a51c13;
+  --color-lift-400: #f7cc2b;
+  --color-lift-500: #f5c518;
+  --color-lift-600: #dba90a;
+  --color-paper: #efebdf;
+  --color-paper-dim: #b9b2a0;
+  --color-ink: #1f2326;
+  --color-ink-soft: #5b6067;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-steel-950);
+  color: var(--color-alu-300);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Badge lettering: Archivo at its widest, the way model names are spaced across a tail panel. */
+.font-badge {
+  font-stretch: 125%;
+}
+.font-narrow {
+  font-stretch: 80%;
+}
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-lift-500);
+  outline-offset: 2px;
+}
+
+/* Brushed-metal surfaces */
+.metal-plate {
+  background: linear-gradient(172deg, #e3e6e9 0%, #b9bfc5 46%, #d5d9dd 54%, #a9b0b7 100%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.8),
+    inset 0 -1px 0 rgb(0 0 0 / 0.35),
+    0 16px 34px rgb(0 0 0 / 0.45);
+}
+.metal-pull {
+  background: linear-gradient(180deg, #eef0f2, #8f979e 60%, #5d646b);
+}
+.metal-rail {
+  background: linear-gradient(180deg, #dfe3e7, #838b93);
+  box-shadow: 0 6px 14px rgb(0 0 0 / 0.5);
+}
+.rivet {
+  background: radial-gradient(circle at 35% 30%, #f4f5f6, #70777e);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.25);
+}
+.drawer-face {
+  background: linear-gradient(180deg, #33383e, #25292d);
+}
+.drawer-tray {
+  box-shadow: inset 0 10px 14px -8px rgb(0 0 0 / 0.8);
+}
+.chest-red {
+  background: linear-gradient(180deg, #c8271c, #a51c13);
+}
+.button-red {
+  background: linear-gradient(180deg, #e2382c, #b01f15);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 10px 22px rgb(120 14 8 / 0.5);
+}
+.pendant {
+  background: linear-gradient(180deg, #f7cc2b, #dba90a);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.6),
+    0 12px 24px rgb(0 0 0 / 0.5);
+}
+
+/* Range inputs: a slotted track with a machined knob */
+input[type='range'].slider {
+  appearance: none;
+  width: 100%;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type='range'].slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to right, var(--color-lift-500) var(--fill, 0%), #0b0c0d var(--fill, 0%));
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.8);
+}
+input[type='range'].slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff, #9aa1a8);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.7);
+}
+input[type='range'].slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: #0b0c0d;
+}
+input[type='range'].slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-lift-500);
+}
+input[type='range'].slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff, #9aa1a8);
+}
+
+.scroll-steel {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-steel-500) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Paper key tags on the Car Selector's rail: one per car, hanging from a wire hook. */
+.key-tag {
+  position: relative;
+  width: 112px;
+  flex: none;
+  margin-top: 22px;
+  padding: 26px 10px 10px;
+  border-radius: 5px 5px 9px 9px;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 8px 16px rgb(0 0 0 / 0.45);
+  transform-origin: 50% -18px;
+  transition: transform 0.16s ease;
+}
+.key-tag::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -24px;
+  width: 2px;
+  height: 34px;
+  background: #9aa1a8;
+  transform: translateX(-50%);
+}
+.key-tag::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  width: 11px;
+  height: 11px;
+  margin-left: -5.5px;
+  border-radius: 50%;
+  background: #1b1e21;
+  box-shadow: 0 0 0 2px var(--color-paper-dim);
+}
+li:nth-child(odd) > .key-tag {
+  transform: rotate(-1.4deg);
+}
+li:nth-child(even) > .key-tag {
+  transform: rotate(1.1deg);
+}
+li > .key-tag:hover:not(:disabled) {
+  transform: translateY(-4px);
+}
+li > .key-tag[aria-current='true'] {
+  transform: translateY(-14px);
+  background: #fff;
+  box-shadow:
+    0 0 0 3px var(--color-chest-500),
+    0 14px 24px rgb(0 0 0 / 0.55);
+}
+.key-tag:disabled {
+  cursor: default;
+}

@@ -1,0 +1,24 @@
+{
+  "name": "blend-garage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm --workspace @blend-garage/garage-web run dev",
+    "build": "npm run build:packages && npm --workspace @blend-garage/garage-web run build",
+    "build:packages": "npm --workspace @blend-garage/vehicle-core run build && npm --workspace @blend-garage/damage-bridge run build && npm --workspace @blend-garage/world-racing run build",
+    "typecheck": "npm --workspace @blend-garage/vehicle-core run typecheck && npm --workspace @blend-garage/damage-bridge run typecheck && npm --workspace @blend-garage/world-racing run typecheck && npm --workspace @blend-garage/garage-web run typecheck",
+    "test": "vitest run",
+    "import-cars": "node tools/car-importer/import-cars.mjs",
+    "watch-cars": "node tools/car-importer/import-cars.mjs --watch",
+    "validate-cars": "node tools/car-importer/import-cars.mjs --validate-only"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vitest": "^3.1.1"
+  }
+}

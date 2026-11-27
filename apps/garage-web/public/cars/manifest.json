@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-27T01:59:19.232Z",
+  "cars": [
+    {
+      "id": "chevrolet-corvette-c3",
+      "name": "Chevrolet Corvette C3",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/chevrolet-corvette-c3/vehicle.json",
+      "modelUrl": "/cars/chevrolet-corvette-c3/model.glb",
+      "importedAt": "2026-11-26T21:46:43.041948+00:00"
+    },
+    {
+      "id": "chevrolet-corvette-c4",
+      "name": "Chevrolet Corvette C4",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/chevrolet-corvette-c4/vehicle.json",
+      "modelUrl": "/cars/chevrolet-corvette-c4/model.glb",
+      "importedAt": "2026-11-26T21:46:03.021870+00:00"
+    },
+    {
+      "id": "chevrolet-corvette-c5",
+      "name": "Chevrolet Corvette C5",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/chevrolet-corvette-c5/vehicle.json",
+      "modelUrl": "/cars/chevrolet-corvette-c5/model.glb",
+      "importedAt": "2026-11-26T21:46:54.429570+00:00"
+    },
+    {
+      "id": "chevrolet-corvette-c6",
+      "name": "Chevrolet Corvette C6",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/chevrolet-corvette-c6/vehicle.json",
+      "modelUrl": "/cars/chevrolet-corvette-c6/model.glb",
+      "importedAt": "2026-11-26T21:45:48.873273+00:00"
+    },
+    {
+      "id": "chevrolet-corvette-c8",
+      "name": "Chevrolet Corvette C8",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/chevrolet-corvette-c8/vehicle.json",
+      "modelUrl": "/cars/chevrolet-corvette-c8/model.glb",
+      "importedAt": "2026-11-26T21:46:16.016399+00:00"
+    },
+    {
+      "id": "ff1-toyota-supra-astra",
+      "name": "Ff1 Toyota Supra Astra",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/ff1-toyota-supra-astra/vehicle.json",
+      "modelUrl": "/cars/ff1-toyota-supra-astra/model.glb",
+      "importedAt": "2026-11-27T01:44:08.106215+00:00"
+    },
+    {
+      "id": "ff1-toyota-supra-gemini-neon",
+      "name": "Ff1 Toyota Supra Gemini Neon",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/ff1-toyota-supra-gemini-neon/vehicle.json",
+      "modelUrl": "/cars/ff1-toyota-supra-gemini-neon/model.glb",
+      "importedAt": "2026-11-27T01:43:53.028337+00:00"
+    },
+    {
+      "id": "lamborghini-aventador-lp700-4",
+      "name": "Lamborghini Aventador Lp700 4",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/lamborghini-aventador-lp700-4/vehicle.json",
+      "modelUrl": "/cars/lamborghini-aventador-lp700-4/model.glb",
+      "importedAt": "2026-11-27T01:54:03.833934+00:00"
+    },
+    {
+      "id": "porsche-911-gt3rs-astra-white",
+      "name": "Porsche 911 Gt3rs Astra White",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/porsche-911-gt3rs-astra-white/vehicle.json",
+      "modelUrl": "/cars/porsche-911-gt3rs-astra-white/model.glb",
+      "importedAt": "2026-11-27T01:59:17.513915+00:00"
+    },
+    {
+      "id": "supercar-original",
+      "name": "Supercar Original",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/supercar-original/vehicle.json",
+      "modelUrl": "/cars/supercar-original/model.glb",
+      "importedAt": "2026-11-26T21:46:23.735538+00:00"
+    },
+    {
+      "id": "tesla-roadster-2026",
+      "name": "Tesla Roadster 2026",
+      "author": "Garage Builder",
+      "vehicleUrl": "/cars/tesla-roadster-2026/vehicle.json",
+      "modelUrl": "/cars/tesla-roadster-2026/model.glb",
+      "importedAt": "2026-11-26T21:46:30.326742+00:00"
+    }
+  ]
+}

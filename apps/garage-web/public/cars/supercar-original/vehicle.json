@@ -1,0 +1,1033 @@
+{
+  "schemaVersion": 1,
+  "id": "supercar-original",
+  "name": "Supercar Original",
+  "author": "Garage Builder",
+  "sourceFile": "supercar-original.blend",
+  "importedAt": "2026-11-26T21:46:23.735538+00:00",
+  "modelUrl": "/cars/supercar-original/model.glb",
+  "bounds": {
+    "min": [
+      -1.1815,
+      0,
+      -2.3074
+    ],
+    "max": [
+      1.1815,
+      1.2477,
+      2.3074
+    ],
+    "size": [
+      2.363,
+      1.2477,
+      4.6148
+    ],
+    "center": [
+      0,
+      0.6239,
+      0
+    ]
+  },
+  "triangleCount": 2248918,
+  "objectCount": 303,
+  "wheels": [
+    {
+      "id": "wheel-assembly-fl",
+      "corner": "FL",
+      "objectName": "wheel_assembly_FL",
+      "center": [
+        -0.8575,
+        0.35,
+        -1.2046
+      ],
+      "radius": 0.35,
+      "width": 0.2664
+    },
+    {
+      "id": "wheel-assembly-fr",
+      "corner": "FR",
+      "objectName": "wheel_assembly_FR",
+      "center": [
+        0.8575,
+        0.35,
+        -1.2046
+      ],
+      "radius": 0.35,
+      "width": 0.2664
+    },
+    {
+      "id": "wheel-assembly-rl",
+      "corner": "RL",
+      "objectName": "wheel_assembly_RL",
+      "center": [
+        -0.8275,
+        0.3725,
+        1.4954
+      ],
+      "radius": 0.3725,
+      "width": 0.3266
+    },
+    {
+      "id": "wheel-assembly-rr",
+      "corner": "RR",
+      "objectName": "wheel_assembly_RR",
+      "center": [
+        0.8275,
+        0.3725,
+        1.4954
+      ],
+      "radius": 0.3725,
+      "width": 0.3266
+    }
+  ],
+  "parts": [
+    {
+      "id": "hood",
+      "label": "Hood",
+      "category": "hood",
+      "objectName": "hood",
+      "defaultVisible": true
+    },
+    {
+      "id": "skirt-l",
+      "label": "Skirt L",
+      "category": "aero",
+      "objectName": "skirt_L",
+      "defaultVisible": true
+    },
+    {
+      "id": "skirt-r",
+      "label": "Skirt R",
+      "category": "aero",
+      "objectName": "skirt_R",
+      "defaultVisible": true
+    },
+    {
+      "id": "fenderr",
+      "label": "Fenderr",
+      "category": "fender",
+      "objectName": "fenderR",
+      "defaultVisible": true
+    },
+    {
+      "id": "fenderl",
+      "label": "Fenderl",
+      "category": "fender",
+      "objectName": "fenderL",
+      "defaultVisible": true
+    },
+    {
+      "id": "splitter",
+      "label": "Splitter",
+      "category": "aero",
+      "objectName": "splitter",
+      "defaultVisible": true
+    },
+    {
+      "id": "diffuser-corner-fins",
+      "label": "Diffuser Corner Fins",
+      "category": "aero",
+      "objectName": "diffuser_corner_fins",
+      "defaultVisible": true
+    },
+    {
+      "id": "skirt-fins-l",
+      "label": "Skirt Fins L",
+      "category": "aero",
+      "objectName": "skirt_fins_L",
+      "defaultVisible": true
+    },
+    {
+      "id": "skirt-fins-r",
+      "label": "Skirt Fins R",
+      "category": "aero",
+      "objectName": "skirt_fins_R",
+      "defaultVisible": true
+    },
+    {
+      "id": "splitter-fences",
+      "label": "Splitter Fences",
+      "category": "aero",
+      "objectName": "splitter_fences",
+      "defaultVisible": true
+    },
+    {
+      "id": "splitter-step",
+      "label": "Splitter Step",
+      "category": "aero",
+      "objectName": "splitter_step",
+      "defaultVisible": true
+    },
+    {
+      "id": "diffuser",
+      "label": "Diffuser",
+      "category": "aero",
+      "objectName": "diffuser",
+      "defaultVisible": true
+    },
+    {
+      "id": "diffuser-fins",
+      "label": "Diffuser Fins",
+      "category": "aero",
+      "objectName": "diffuser_fins",
+      "defaultVisible": true
+    },
+    {
+      "id": "doorr",
+      "label": "Doorr",
+      "category": "door",
+      "objectName": "doorR",
+      "defaultVisible": true
+    },
+    {
+      "id": "doorl",
+      "label": "Doorl",
+      "category": "door",
+      "objectName": "doorL",
+      "defaultVisible": true
+    },
+    {
+      "id": "doorcard-l",
+      "label": "Doorcard L",
+      "category": "door",
+      "objectName": "doorcard_L",
+      "defaultVisible": true
+    },
+    {
+      "id": "doorcard-r",
+      "label": "Doorcard R",
+      "category": "door",
+      "objectName": "doorcard_R",
+      "defaultVisible": true
+    },
+    {
+      "id": "glass-doorl",
+      "label": "Glass Doorl",
+      "category": "door",
+      "objectName": "glass_doorL",
+      "defaultVisible": true
+    },
+    {
+      "id": "glass-doorr",
+      "label": "Glass Doorr",
+      "category": "door",
+      "objectName": "glass_doorR",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-ambient-l",
+      "label": "Door Ambient L",
+      "category": "door",
+      "objectName": "door_ambient_L",
+      "defaultVisible": true
+    },
+    {
+      "id": "door-ambient-r",
+      "label": "Door Ambient R",
+      "category": "door",
+      "objectName": "door_ambient_R",
+      "defaultVisible": true
+    },
+    {
+      "id": "rear-bumper-bar",
+      "label": "Rear Bumper Bar",
+      "category": "bumper",
+      "objectName": "rear_bumper_bar",
+      "defaultVisible": true
+    },
+    {
+      "id": "grille-hoodr",
+      "label": "Grille Hoodr",
+      "category": "hood",
+      "objectName": "grille_hoodR",
+      "defaultVisible": true
+    },
+    {
+      "id": "grille-hoodl",
+      "label": "Grille Hoodl",
+      "category": "hood",
+      "objectName": "grille_hoodL",
+      "defaultVisible": true
+    }
+  ],
+  "slots": [],
+  "materialZones": [
+    {
+      "id": "paint",
+      "materialName": "paint",
+      "role": "primary",
+      "defaultColor": "#060607",
+      "meshNames": [
+        "rbumper",
+        "clamL",
+        "clamR",
+        "sillL",
+        "sillR",
+        "doorL",
+        "doorR",
+        "fenderL",
+        "fenderR",
+        "hood",
+        "fbumper",
+        "ecover",
+        "roof",
+        "vent_ribsL",
+        "vent_ribsR",
+        "rear_frame",
+        "rear_bar",
+        "tail_lip_L",
+        "tail_lip_R",
+        "arch_lip_F_L",
+        "arch_lip_F_R",
+        "arch_lip_R_L",
+        "arch_lip_R_R",
+        "mirror_L",
+        "mirror_stalk_L",
+        "mirror_R",
+        "mirror_stalk_R",
+        "handle_L",
+        "handle_R",
+        "scoop_lip_L",
+        "scoop_lip_R"
+      ]
+    },
+    {
+      "id": "lamp-red-body",
+      "materialName": "lamp_red_body",
+      "role": "primary",
+      "defaultColor": "#1f0202",
+      "meshNames": [
+        "lens_tail_L",
+        "lens_tail_R"
+      ]
+    },
+    {
+      "id": "caliper",
+      "materialName": "caliper",
+      "role": "accent",
+      "defaultColor": "#5b0a0d",
+      "meshNames": [
+        "caliper_FL",
+        "caliper_FR",
+        "caliper_RL",
+        "caliper_RR"
+      ]
+    },
+    {
+      "id": "glass-lamp",
+      "materialName": "glass_lamp",
+      "role": "glass",
+      "defaultColor": "#f7f9fc",
+      "meshNames": [
+        "lamp_cover_fend_L",
+        "lamp_cover_fend_R"
+      ]
+    },
+    {
+      "id": "carbon-dry",
+      "materialName": "carbon_dry",
+      "role": "trim",
+      "defaultColor": "#e7e7e7",
+      "meshNames": [
+        "rbumper",
+        "clamL",
+        "clamR",
+        "sillL",
+        "sillR",
+        "doorL",
+        "doorR",
+        "fenderL",
+        "fenderR",
+        "hood",
+        "fbumper",
+        "ecover",
+        "seat_L",
+        "seat_R"
+      ]
+    },
+    {
+      "id": "carbon-tub",
+      "materialName": "carbon_tub",
+      "role": "trim",
+      "defaultColor": "#e7e7e7",
+      "meshNames": [
+        "tub"
+      ]
+    },
+    {
+      "id": "rubber",
+      "materialName": "rubber",
+      "role": "trim",
+      "defaultColor": "#131314",
+      "meshNames": [
+        "seal_frame_L",
+        "seal_bpillar_L",
+        "seal_jamb_L",
+        "seal_frame_R",
+        "seal_bpillar_R",
+        "seal_jamb_R",
+        "cowl_seal",
+        "rack_boots",
+        "cv_boots_RL",
+        "cv_boots_RR",
+        "wiring_loom",
+        "eng_harness",
+        "eng_belt"
+      ]
+    },
+    {
+      "id": "carbon",
+      "materialName": "carbon",
+      "role": "trim",
+      "defaultColor": "#e7e7e7",
+      "meshNames": [
+        "intake_struts",
+        "rear_bumper_bar",
+        "splitter",
+        "splitter_step",
+        "splitter_fences",
+        "bumper_winglets",
+        "skirt_L",
+        "wing_fin_L",
+        "skirt_fins_L",
+        "skirt_R",
+        "wing_fin_R",
+        "skirt_fins_R",
+        "diffuser",
+        "diffuser_fins",
+        "diffuser_corner_fins",
+        "exh_bezel",
+        "wing_pylons",
+        "front_crash",
+        "rad_front_L_shroud",
+        "rad_front_R_shroud",
+        "intercooler_L_shroud",
+        "intercooler_R_shroud",
+        "eng_plenum",
+        "eng_intakes",
+        "dash_trim",
+        "wheel_spokes",
+        "console"
+      ]
+    },
+    {
+      "id": "tyre",
+      "materialName": "tyre",
+      "role": "trim",
+      "defaultColor": "#111112",
+      "meshNames": [
+        "tyre_FL",
+        "tyre_FR",
+        "tyre_RL",
+        "tyre_RR"
+      ]
+    },
+    {
+      "id": "plastic",
+      "materialName": "plastic",
+      "role": "trim",
+      "defaultColor": "#222224",
+      "meshNames": [
+        "louvres",
+        "front_bay_boxes",
+        "loom_clips",
+        "rad_front_L_fan",
+        "rad_front_R_fan",
+        "eng_coils",
+        "vents",
+        "wheel_buttons",
+        "door_speaker_L",
+        "door_speaker_R"
+      ]
+    },
+    {
+      "id": "carbon-big",
+      "materialName": "carbon_big",
+      "role": "trim",
+      "defaultColor": "#e7e7e7",
+      "meshNames": [
+        "wing_main",
+        "wing_gurney",
+        "wing_endplates"
+      ]
+    },
+    {
+      "id": "plastic-gloss",
+      "materialName": "plastic_gloss",
+      "role": "trim",
+      "defaultColor": "#161618",
+      "meshNames": [
+        "cap_FL",
+        "cap_FR",
+        "cap_RL",
+        "cap_RR",
+        "tub_plate_text",
+        "eng_label_text",
+        "seat_slots_L",
+        "seat_slots_R",
+        "dash_defrost",
+        "screens",
+        "console_buttons"
+      ]
+    },
+    {
+      "id": "lamp-drl",
+      "materialName": "lamp_drl",
+      "role": "headlight",
+      "defaultColor": "#dadada",
+      "meshNames": [
+        "drl_fend_L",
+        "drl_fend_R"
+      ]
+    },
+    {
+      "id": "lamp-white",
+      "materialName": "lamp_white",
+      "role": "headlight",
+      "defaultColor": "#cbcbcb",
+      "meshNames": [
+        "proj_lens_0_L",
+        "proj_lens_1_L",
+        "proj_lens_2_L",
+        "proj_lens_0_R",
+        "proj_lens_1_R",
+        "proj_lens_2_R"
+      ]
+    },
+    {
+      "id": "cavity",
+      "materialName": "cavity",
+      "role": "other",
+      "defaultColor": "#161618",
+      "meshNames": [
+        "rbumper",
+        "clamL",
+        "clamR",
+        "floorR",
+        "sillL",
+        "sillR",
+        "undertray",
+        "doorL",
+        "doorR",
+        "fenderL",
+        "fenderR",
+        "hood",
+        "floorF",
+        "fbumper",
+        "exh_tips_inner"
+      ]
+    },
+    {
+      "id": "liner",
+      "materialName": "liner",
+      "role": "other",
+      "defaultColor": "#1d1d1e",
+      "meshNames": [
+        "clamL",
+        "clamR",
+        "fenderL",
+        "fenderR",
+        "hood",
+        "arch_shields"
+      ]
+    },
+    {
+      "id": "alu",
+      "materialName": "alu",
+      "role": "other",
+      "defaultColor": "#bfc0c4",
+      "meshNames": [
+        "tub_hardware",
+        "tub_plate",
+        "front_bay_caps",
+        "pedals",
+        "rad_front_L_tanks",
+        "rad_front_L_tabs",
+        "rad_front_R_tanks",
+        "rad_front_R_tabs",
+        "intercooler_L_tanks",
+        "intercooler_L_tabs",
+        "intercooler_R_tanks",
+        "intercooler_R_tabs",
+        "eng_label",
+        "eng_cover_text",
+        "eng_plenum_badge",
+        "eng_pulleys",
+        "seat_rails_L",
+        "seat_buckle_L",
+        "seat_rails_R",
+        "seat_buckle_R",
+        "console_knobs",
+        "door_pull_L",
+        "door_pull_R"
+      ]
+    },
+    {
+      "id": "steel",
+      "materialName": "steel",
+      "role": "other",
+      "defaultColor": "#ced0d3",
+      "meshNames": [
+        "front_subframe_bolts",
+        "rear_subframe_bolts",
+        "link_FL",
+        "link_FR",
+        "link_RL",
+        "link_RR",
+        "driveshaft_RL",
+        "driveshaft_RR",
+        "brake_lines",
+        "rad_front_L_bolts",
+        "rad_front_R_bolts",
+        "intercooler_L_bolts",
+        "intercooler_R_bolts",
+        "rad_clamps_L",
+        "rad_clamps_R",
+        "eng_bolts",
+        "eng_clamps",
+        "gearbox_bolts",
+        "exh_flanges",
+        "exh_muffler"
+      ]
+    },
+    {
+      "id": "leather-red",
+      "materialName": "leather_red",
+      "role": "other",
+      "defaultColor": "#a21d22",
+      "meshNames": [
+        "seat_L",
+        "seat_R",
+        "dash",
+        "wheel_rim",
+        "console_arm",
+        "doorcard_L",
+        "doorcard_R",
+        "quartertrim_L",
+        "quartertrim_R",
+        "bulkhead_trim"
+      ]
+    },
+    {
+      "id": "alu-cast",
+      "materialName": "alu_cast",
+      "role": "other",
+      "defaultColor": "#c4c5c8",
+      "meshNames": [
+        "front_subframe_brackets",
+        "steering_rack",
+        "rear_subframe_brackets",
+        "upright_FL",
+        "upright_FR",
+        "upright_RL",
+        "upright_RR",
+        "eng_block",
+        "turbo_cores"
+      ]
+    },
+    {
+      "id": "headliner",
+      "materialName": "headliner",
+      "role": "other",
+      "defaultColor": "#1f0a0b",
+      "meshNames": [
+        "roof"
+      ]
+    },
+    {
+      "id": "pane-ws",
+      "materialName": "pane_ws",
+      "role": "other",
+      "defaultColor": "#dfe2e2",
+      "meshNames": [
+        "windshield"
+      ]
+    },
+    {
+      "id": "frame",
+      "materialName": "frame",
+      "role": "other",
+      "defaultColor": "#4b4c4f",
+      "meshNames": [
+        "front_subframe",
+        "rear_subframe"
+      ]
+    },
+    {
+      "id": "wheel",
+      "materialName": "wheel",
+      "role": "other",
+      "defaultColor": "#08080a",
+      "meshNames": [
+        "rim_FL",
+        "rim_FR",
+        "rim_RL",
+        "rim_RR"
+      ]
+    },
+    {
+      "id": "silicone",
+      "materialName": "silicone",
+      "role": "other",
+      "defaultColor": "#19191d",
+      "meshNames": [
+        "rad_hoses_L",
+        "rad_hoses_R",
+        "eng_couplers"
+      ]
+    },
+    {
+      "id": "pane-ec",
+      "materialName": "pane_ec",
+      "role": "other",
+      "defaultColor": "#ced1d1",
+      "meshNames": [
+        "glass_ecover"
+      ]
+    },
+    {
+      "id": "pane-side",
+      "materialName": "pane_side",
+      "role": "other",
+      "defaultColor": "#dadddd",
+      "meshNames": [
+        "glass_doorL",
+        "glass_doorR"
+      ]
+    },
+    {
+      "id": "titan",
+      "materialName": "titan",
+      "role": "other",
+      "defaultColor": "#e7e7e7",
+      "meshNames": [
+        "turbo_turbines",
+        "eng_manifolds",
+        "exh_pipes"
+      ]
+    },
+    {
+      "id": "magnesium",
+      "materialName": "magnesium",
+      "role": "other",
+      "defaultColor": "#59595b",
+      "meshNames": [
+        "gearbox"
+      ]
+    },
+    {
+      "id": "leather-black",
+      "materialName": "leather_black",
+      "role": "other",
+      "defaultColor": "#1d1d1e",
+      "meshNames": [
+        "seat_piping_L",
+        "seat_piping_R",
+        "binnacle",
+        "wheel_pad"
+      ]
+    },
+    {
+      "id": "alcantara",
+      "materialName": "alcantara",
+      "role": "other",
+      "defaultColor": "#272729",
+      "meshNames": [
+        "seat_harness_L",
+        "seat_headpad_L",
+        "seat_harness_R",
+        "seat_headpad_R",
+        "dash_lower",
+        "wheel_rim"
+      ]
+    },
+    {
+      "id": "lamp-band",
+      "materialName": "lamp_band",
+      "role": "other",
+      "defaultColor": "#3f4043",
+      "meshNames": [
+        "lamp_band_fend_L",
+        "lamp_band_fend_R"
+      ]
+    },
+    {
+      "id": "mesh-black",
+      "materialName": "mesh_black",
+      "role": "other",
+      "defaultColor": "#0b0b0d",
+      "meshNames": [
+        "grille_hoodL",
+        "grille_sideL",
+        "grille_hoodR",
+        "grille_sideR",
+        "grille_rearlowL",
+        "grille_rearlowR"
+      ]
+    },
+    {
+      "id": "polished",
+      "materialName": "polished",
+      "role": "other",
+      "defaultColor": "#f3f5f6",
+      "meshNames": [
+        "eng_charge_cold",
+        "turbo_compressors",
+        "eng_charge_hot"
+      ]
+    },
+    {
+      "id": "louvre-red",
+      "materialName": "louvre_red",
+      "role": "other",
+      "defaultColor": "#590d10",
+      "meshNames": [
+        "louvre_tray"
+      ]
+    },
+    {
+      "id": "pane-qtr",
+      "materialName": "pane_qtr",
+      "role": "other",
+      "defaultColor": "#c8cbcb",
+      "meshNames": [
+        "glass_qtrL",
+        "glass_qtrR"
+      ]
+    },
+    {
+      "id": "dash-top",
+      "materialName": "dash_top",
+      "role": "other",
+      "defaultColor": "#7c181b",
+      "meshNames": [
+        "dash"
+      ]
+    },
+    {
+      "id": "anod-black",
+      "materialName": "anod_black",
+      "role": "other",
+      "defaultColor": "#212123",
+      "meshNames": [
+        "arb_front",
+        "arm_lower_FL",
+        "arm_upper_FL",
+        "arm_lower_FR",
+        "arm_upper_FR",
+        "arm_lower_RL",
+        "arm_upper_RL",
+        "arm_lower_RR",
+        "arm_upper_RR"
+      ]
+    },
+    {
+      "id": "alu-dark",
+      "materialName": "alu_dark",
+      "role": "other",
+      "defaultColor": "#555559",
+      "meshNames": [
+        "disc_FL",
+        "disc_FR",
+        "disc_RL",
+        "disc_RR",
+        "abs_reservoir",
+        "eng_sump"
+      ]
+    },
+    {
+      "id": "mesh",
+      "materialName": "mesh",
+      "role": "other",
+      "defaultColor": "#1d1d1e",
+      "meshNames": [
+        "grille_front_0",
+        "grille_front_1",
+        "grille_front_2",
+        "mesh_tail_L",
+        "mesh_tail_R",
+        "grille_rear_c"
+      ]
+    },
+    {
+      "id": "disc",
+      "materialName": "disc",
+      "role": "other",
+      "defaultColor": "#3f3f40",
+      "meshNames": [
+        "disc_FL",
+        "disc_FR",
+        "disc_RL",
+        "disc_RR"
+      ]
+    },
+    {
+      "id": "gold",
+      "materialName": "gold",
+      "role": "other",
+      "defaultColor": "#f9ce81",
+      "meshNames": [
+        "front_bay_canisters",
+        "coil_FL_body",
+        "coil_FR_body",
+        "coil_RL_body",
+        "coil_RR_body",
+        "turbo_heat_shields",
+        "gearbox_cover_bolts"
+      ]
+    },
+    {
+      "id": "red-crackle",
+      "materialName": "red_crackle",
+      "role": "other",
+      "defaultColor": "#b31d1f",
+      "meshNames": [
+        "eng_covers"
+      ]
+    },
+    {
+      "id": "chrome",
+      "materialName": "chrome",
+      "role": "other",
+      "defaultColor": "#f9f9fa",
+      "meshNames": [
+        "proj_bezel_0_L",
+        "proj_bezel_1_L",
+        "proj_bezel_2_L",
+        "proj_bezel_0_R",
+        "proj_bezel_1_R",
+        "proj_bezel_2_R",
+        "mirror_L",
+        "mirror_R",
+        "handle_trim_L",
+        "handle_trim_R",
+        "badge",
+        "name_rear",
+        "coil_FL_rod",
+        "coil_FR_rod",
+        "coil_RL_rod",
+        "coil_RR_rod",
+        "exh_tips",
+        "vent_rings"
+      ]
+    },
+    {
+      "id": "radiator",
+      "materialName": "radiator",
+      "role": "other",
+      "defaultColor": "#303035",
+      "meshNames": [
+        "rad_front_L_core",
+        "rad_front_R_core",
+        "intercooler_L_core",
+        "intercooler_R_core"
+      ]
+    },
+    {
+      "id": "mesh-lit",
+      "materialName": "mesh_lit",
+      "role": "other",
+      "defaultColor": "#2f2f30",
+      "meshNames": [
+        "grille_rearL",
+        "grille_rearR"
+      ]
+    },
+    {
+      "id": "ambient-red",
+      "materialName": "ambient_red",
+      "role": "other",
+      "defaultColor": "#270000",
+      "meshNames": [
+        "dash_piping",
+        "console_ambient",
+        "door_ambient_L",
+        "door_ambient_R"
+      ]
+    },
+    {
+      "id": "red-gloss",
+      "materialName": "red_gloss",
+      "role": "other",
+      "defaultColor": "#bc191d",
+      "meshNames": [
+        "badge_in",
+        "front_bay_red",
+        "coil_FL_spring",
+        "coil_FR_spring",
+        "coil_RL_spring",
+        "coil_RR_spring",
+        "eng_plenum_stripes",
+        "seat_buckle_red_L",
+        "seat_buckle_red_R",
+        "wheel_red",
+        "console_red"
+      ]
+    },
+    {
+      "id": "braid",
+      "materialName": "braid",
+      "role": "other",
+      "defaultColor": "#b3b5b8",
+      "meshNames": [
+        "oil_lines"
+      ]
+    },
+    {
+      "id": "lamp-red",
+      "materialName": "lamp_red",
+      "role": "other",
+      "defaultColor": "#891010",
+      "meshNames": [
+        "line_tail_L",
+        "line_tail_R",
+        "rear_markers"
+      ]
+    },
+    {
+      "id": "anod-red",
+      "materialName": "anod_red",
+      "role": "other",
+      "defaultColor": "#c4272c",
+      "meshNames": [
+        "eng_dipstick",
+        "oil_fittings"
+      ]
+    },
+    {
+      "id": "ui-white",
+      "materialName": "ui_white",
+      "role": "other",
+      "defaultColor": "#272727",
+      "meshNames": [
+        "screen_ui",
+        "console_text"
+      ]
+    },
+    {
+      "id": "ui-red",
+      "materialName": "ui_red",
+      "role": "other",
+      "defaultColor": "#3f0000",
+      "meshNames": [
+        "screen_ui_red",
+        "wheel_shiftlights"
+      ]
+    },
+    {
+      "id": "white-text",
+      "materialName": "white_text",
+      "role": "other",
+      "defaultColor": "#ededed",
+      "meshNames": [
+        "caltext_FL",
+        "caltext_FR",
+        "caltext_RL",
+        "caltext_RR"
+      ]
+    }
+  ],
+  "hints": [
+    "Detected car length along Blender X-axis; rotated 90° so it parks lengthwise inside garage bays."
+  ]
+}
